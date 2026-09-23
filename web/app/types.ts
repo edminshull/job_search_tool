@@ -76,6 +76,10 @@ export type CvAttempt = {
     model: string;        // e.g. "local:qwen3-coder-30b-a3b"
     verdict: string;      // accept | revise | reject | unknown
     reason: string | null;
+    /** Failure modes this attempt PROVED the previous draft had, recorded so the
+     *  drafter is taught them from now on. Present only on an escalation that
+     *  verified strictly better — a retry that fared no better proves nothing. */
+    learned?: string[];
 };
 
 /** A drafted (and verified) CV, as returned by /api/tailor/preview. */
@@ -130,6 +134,9 @@ export type StoredTailoring = {
     verify_model: string | null;
     verify_verdict: string | null;
     verify_notes: string | null;
+    /** JSON: one CvAttempt per drafting attempt, in order. Written by
+     *  cv_tailor.preview so the provenance survives a reload. */
+    attempts: string | null;
     master_coverage: number | null;
     tailored_coverage: number | null;
     error: string | null;

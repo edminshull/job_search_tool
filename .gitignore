@@ -42,3 +42,11 @@ context/
 # target salary. contract.yaml.example is committed in its place, and is what
 # app/contract_rates.py falls back to, so a fresh clone still runs.
 contract.yaml
+
+# --- QA / E2E -----------------------------------------------------------------
+# Playwright's build output for the test server (see web/next.config.js's
+# NEXT_DIST_DIR) and the generated fixture board. Neither is source.
+web/.next-e2e/
+web/e2e/.fixtures/
+web/playwright-report/
+web/test-results/

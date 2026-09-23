@@ -209,6 +209,29 @@ def test_cli_ingests_a_paste_and_reports_it(db, tmp_path):
     assert removed.returncode == 0 and "Removed" in removed.stdout
 
 
+def test_cli_reads_a_piped_paste_without_stdin_flag(db):
+    """The README's clipboard recipe is `pbpaste | python -m app.add_job …`,
+    with no `--stdin`. That command used to exit 0 having stored
+    description="" — the job landed on the board with no JD text, so the AI
+    step had nothing to score and the detail panel was blank. Silent data loss
+    is the worst failure mode this tool has, hence a test on the exact pipe."""
+    url = "https://www.linkedin.com/jobs/view/4455443322"
+    result = subprocess.run(
+        [sys.executable, "-m", "app.add_job", "--db", db, "--url", url,
+         "--company", "Resillion", "--title", "Senior Test Automation Engineer",
+         "--location", "London (hybrid)"],
+        input=RAW_PASTE, capture_output=True, text=True, cwd=os.getcwd(),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Result       : Added" in result.stdout
+    assert f"Description  : {len(RAW_PASTE)} characters" in result.stdout
+
+    with dedup.connect(db) as conn:
+        got = dedup.get_details_by_url(conn, add_job.canonical_url(url))
+    assert got is not None, "the piped run stored nothing"
+    assert got["description"] == RAW_PASTE
+
+
 def test_cli_refuses_guessed_values_without_yes(db, tmp_path):
     """The safety property: --infer alone must not write a guessed company."""
     paste = tmp_path / "posting.txt"

@@ -26,7 +26,8 @@ Usage (run from the repo root):
         --company Resillion --title "Senior Test Automation Analyst" \\
         --location "London (hybrid)" --file ~/Downloads/posting.txt
 
-    # paste straight from the clipboard
+    # paste straight from the clipboard — a piped stdin is read automatically,
+    # so no flag is needed (`--stdin` says it explicitly and also works)
     pbpaste | python -m app.add_job --url "..." --company X --title Y
 
     # let it infer company/title/location from a LinkedIn paste (it prints
@@ -349,6 +350,32 @@ def report_contract_terms(employment_type, title, location, description) -> None
               "the permanent-salary equivalent.")
 
 
+def _stdin_is_piped() -> bool:
+    """True when stdin is a pipe or a file rather than a terminal.
+
+    The distinction is what lets `pbpaste | python -m app.add_job …` work with no
+    flag, while an interactive run with no paste at all still asks for nothing
+    and hangs on nothing. Guarded because an inherited-but-closed stdin (some
+    CI runners, `subprocess.run` without stdin=) raises on isatty() rather
+    than answering."""
+    try:
+        return not sys.stdin.isatty()
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def _read_piped_stdin() -> str:
+    """Read the piped posting text, treating an unreadable stdin as empty.
+
+    A closed or /dev/null stdin is a normal way to run this (cron, a wrapper
+    script) and must not turn into a traceback: the missing-field checks below
+    already report the real problem if no text arrives."""
+    try:
+        return sys.stdin.read()
+    except (OSError, ValueError):
+        return ""
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -423,8 +450,15 @@ def main():
     text = ""
     if args.file:
         text = open(args.file).read()
-    elif args.stdin:
-        text = sys.stdin.read()
+    elif args.stdin or _stdin_is_piped():
+        # The README's clipboard recipe is `pbpaste | python -m app.add_job …`,
+        # and this branch is what makes it true. Without the pipe check that
+        # command stored description="" — silently, exit code 0 — so the job
+        # reached the board with no JD text and the AI step had nothing to score
+        # (verified 2026-09-23). A pipe is read automatically, the way `cat` and
+        # `git apply` do it; an interactive terminal is never read, so a plain
+        # run with no source still behaves exactly as before.
+        text = _read_piped_stdin()
     elif args.clipboard:
         try:
             text = subprocess.run(["pbpaste"], capture_output=True, text=True, check=True).stdout

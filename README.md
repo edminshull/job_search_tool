@@ -12,6 +12,10 @@ and (for the optional AI step) the Anthropic API. All state — scraped
 jobs, scores, your own notes — lives in a local SQLite database; nothing
 is sent to a third party beyond fetching the postings themselves.
 
+**In a hurry?** [`CHEATSHEET.md`](CHEATSHEET.md) lists the commands for each
+task in the order you run them — fetch, add a LinkedIn find by hand, score,
+open the board, tailor a CV. This file is the reasoning behind them.
+
 <img width="2532" height="1215" alt="image" src="https://github.com/user-attachments/assets/679cea89-3156-4e46-af3c-74d3e0d9b30c" />
 
 ## What is in scope
@@ -437,6 +441,11 @@ candidates, or candidates that don't match your actual stack:
 
 ## Usage
 
+> **Just want the commands?** Every task, in the order you run it, is in
+> [`CHEATSHEET.md`](CHEATSHEET.md) — including
+> [adding a job you found on LinkedIn](CHEATSHEET.md#add-a-job-from-linkedin),
+> which is the one step that is deliberately *not* automatic (see 2b below).
+
 ### 1. Fetch + filter (free)
 
 ```bash
@@ -497,18 +506,26 @@ appears on the board, carries your applied/interview/rejected status and notes,
 and gets scored by the AI step.
 
 ```bash
-# explicit fields — the reliable path
+# explicit fields — the reliable path. Run it once with --dry-run first: it
+# writes nothing and prints the fields, the filter verdict and, for a contract
+# role, the day rate and IR35 verdict.
 python -m app.add_job --url "https://www.linkedin.com/jobs/view/123456" \
     --company Resillion --title "Senior Test Automation Analyst" \
     --location "London (hybrid)" --file ~/Downloads/posting.txt
 
-pbpaste | python -m app.add_job --url "..." --company X --title "Y"   # from clipboard
-
+pbpaste | python -m app.add_job --url "..." --company X --title "Y"   # from clipboard:
+                                                    # a piped stdin is read automatically
 python -m app.add_job --url "..." --infer --file posting.txt   # infer fields (see below)
 python -m app.add_job --list [--pending]                       # what have I added?
 python -m app.add_job --remove "https://..."                   # undo one
 python -m app.add_job --url "..." --company X --title Y --dry-run   # write nothing
 ```
+
+Keeping the paste in `data/postings/` (git-ignored along with the rest of
+`data/`) rather than relying on the clipboard is worth the extra step: it is the
+only record of the advert once the posting comes down, and `--file` is the same
+command either way. [`CHEATSHEET.md`](CHEATSHEET.md#add-a-job-from-linkedin) has
+the full ordered recipe and a worked example of two real postings.
 
 For a **contract** role, add `--contract`. The day rate and IR35 status are read
 out of the pasted text either way — the flag sets the employment type, which an
@@ -656,6 +673,14 @@ Three independent gates, in order:
    bullet still describes the master fact it cites, that no number is invented,
    and that the posting's must-haves the master cannot evidence are named
    plainly. Its verdict is advisory — you decide what to do with it.
+
+   It is handed the draft **resolved**, not raw: bullets the draft left as a bare
+   `- ref:` (which the renderer fills in from the master) are spelled out, and
+   each bullet is labelled *verbatim from master* or *reworded by the draft*.
+   Verifying the raw YAML instead means the most faithful draft possible — every
+   bullet the master's own words, nothing rewritten — reads as a CV with no
+   bullets in it, gets flagged for it, and sends the escalation chasing a defect
+   that does not exist. See `resolve_draft_for_verification`.
 2. **Reference validation** refuses a draft whose `ref` is not in the master,
    naming every bad ref at once and listing the valid ones.
 3. **`render.py`'s fabrication check** is the hard gate. A skill the master
@@ -723,7 +748,10 @@ the original is kept.
 - Reported real result on the Acme role: `local` → **reject** → `deepseek` →
   **revise**, in 67 seconds, with the fabricated claim gone.
 - The preview lists every attempt and why each was set aside, so a
-  cloud-written CV never reads as the local model's work.
+  cloud-written CV never reads as the local model's work. That provenance is
+  **stored** (`cv_tailorings.attempts`), not re-derived from `draft_model` —
+  which names only the draft that survived, so an escalation that was made and
+  then beaten on verdict would otherwise leave no trace at all.
 - `missing_must_haves` is deliberately **excluded** from that handover. Those are
   genuine gaps in your history, so "fix this" could only mean invent it — the one
   outcome the whole system exists to prevent.
@@ -736,6 +764,41 @@ calls only on drafts that actually need them.
 
 A `reject` is never a dead end — the YAML is editable in the preview, and the
 verifier's findings name the exact sentence to remove.
+
+### The drafter is taught its own proven mistakes
+
+An escalation that works is evidence: the verifier flagged the local draft, a
+stronger model re-drafted it, and the result verified **strictly better**. That
+is proof the local draft was wrong, and it is the only thing this loop treats as
+proof. Once a failure mode has been proven **twice**, every subsequent draft is
+told about it.
+
+Three modes, a closed set — citing references that are not in the master,
+inventing numbers, and rewriting a bullet into something the master does not say:
+
+```
+python -m app.cv_tailor lessons                      # what it has learned, and how often
+python -m app.cv_tailor lessons --clear <mode>       # stop teaching one of them
+python -m app.cv_tailor lessons --clear              # forget everything
+```
+
+**The model never writes the prompt.** Only the remedy text in
+`cv_tailor.FAILURE_MODES` reaches the drafter, and it is written by hand. The
+verifier's own wording is stored alongside each count so you can audit what
+produced it, and is never injected. This is the property that makes the loop safe
+to leave switched on: a loop that taught the drafter whatever the verifier said
+would have taught it the Savant false positive — that ref-only drafts are broken
+— permanently, which is the exact reverse of true.
+
+The other two gates matter as much. **A flag alone teaches nothing**: a retry that
+verifies no better is not evidence of a drafting error, which is precisely the
+Savant case. And **`missing_must_haves` is never consulted** — those are real gaps
+in your history, and a remedy drawn from one could only read "close this gap",
+which can only mean inventing it.
+
+The honest limit: this only helps with **recurring, generalizable** failures. A
+one-off posting-specific judgement call is not learnable, so it reduces cloud
+escalations without eliminating them.
 
 ### Updating the master, and why it is manual
 
@@ -799,12 +862,20 @@ Thin wrappers over the commands above — run from the repo root:
 | `make evaluate` | `python -m app.ai_evaluate`       | AI evaluation (step 2). Interactively asks for `--dry-run` and an optional `--limit`. |
 | `make web`      | `npm --prefix web run dev`       | Starts the Next.js review board, with `DB_PATH` already pointed at `data/seen_jobs.sqlite3`. |
 | `make test`     | `pytest app/` + the standalone sanity-check scripts | Runs the full test suite (see the Tests section below). |
+| `make test-ui`  | `npm --prefix web run test:ui`   | The board's 10 Playwright UI tests, headless Chrome. Self-contained: it seeds its own fixture database and starts its own server on port 3100, so it neither touches `data/seen_jobs.sqlite3` nor disturbs a board you already have open on `:3000`. |
+| `make test-ui-headed` | `npm --prefix web run test:ui:headed` | The same 10 tests in a real, visible Chrome window — for watching a journey happen, or demoing it. `QA_SLOWMO=300 make test-ui-headed` slows each action down enough to follow. |
 | `make cv-setup` | `python3 -m venv .venv` + `pip install -r requirements.txt` | One-time: creates the venv the CV pipeline runs in. |
 | `make cv-status` | `python -m app.cv_tailor master-status` | What `cv/master.yaml` holds, and whether it is placeholder data. |
 | `make cv-inventory` | `python -m app.cv_tailor master-inventory` | Re-renders the master full inventory. On demand only — never automatic. |
 | `make cv-selftest` | `python scripts/selftest.py` | The vendored engine's 198 checks, including the fabrication guard. |
 
 `make` with no target runs `make run` (the default goal).
+
+These wrappers cover the pipeline, the board and the CV engine. Two things they
+deliberately do **not** cover, because they take long free-text arguments:
+`python -m app.add_job` (adding a LinkedIn posting by hand — see 2b) and the
+one-off maintenance tools (`app.refilter`, `app.inspect_job`). Both, plus the
+exact ordering of a normal run, are in [`CHEATSHEET.md`](CHEATSHEET.md).
 
 ## Configuration
 
@@ -840,6 +911,8 @@ app/
   main.py                 orchestrates fetch -> filter -> dedup -> candidates.csv
   ats_clients.py           one fetch function per ATS
   aggregator_clients.py    one fetch function per aggregator
+  add_job.py               adds a LinkedIn posting by hand — LinkedIn cannot be fetched (see 2b
+                           and CHEATSHEET.md); the row behaves like any fetched job afterwards
   contract_rates.py        IR35 day-rate equivalence, day-rate/IR35 parsing, the printed report
   filters.py               loads and applies filters.yaml's rules
   jd_text.py               decides whether a stored description is the advert or a listing page
@@ -851,7 +924,15 @@ app/
   scripts/                 one-off diagnostic/maintenance scripts, not part of the pipeline
                            (see backfill_derived_fields.py, queue_polluted_descriptions.py)
   tests/                   pytest + standalone sanity-check scripts
+                           test_qa_component.py            QA component suite (7 tests)
+                           test_qa_component_containers.py QA suite over a containerised
+                                                           upstream (3 tests, skipped without Docker)
+                           qa/                             the mock upstream + the testcontainers
+                                                           fixture and URL shim those two share
 web/                       Next.js review board (see web/README.md)
+  e2e/                     Playwright UI suite (10 tests) + the fixture board it runs against
+CHEATSHEET.md              the commands for each task, in the order you run them
+QA_REPORT.md               the QA test plan, how to run both suites, and the findings
 companies.yaml             company -> ATS registry
 aggregators.yaml           aggregator search config
 filters.yaml               title/location/stack filter rules
@@ -865,6 +946,7 @@ profile.sample.yaml        fully worked (fictional) example of a filled-in profi
 ```bash
 make test          # python suite + the web app's date-parsing tests
 make test-web      # just the web tests and typecheck
+make test-ui       # the board's 10 Playwright UI tests (headless Chrome)
 ```
 
 `make test` runs the pytest suite, the standalone sanity-check scripts
@@ -885,6 +967,40 @@ make on purpose rather than a silent drift. The day-rate arithmetic is
 asserted at a fixed `PINNED_SALARY` rather than at whatever the local
 `contract.yaml` holds, so the suite is still green on a fresh clone that has
 only the example salary.
+
+### The QA suites — positive, negative, boundary and error handling
+
+Beyond the module-level tests above there are two suites organised as a test
+plan, twenty tests in total, covering the pipeline (in `app/tests/`) and the
+board's journeys (in `web/e2e/`):
+
+| | Component (Python) | UI (Playwright) |
+|---|---|---|
+| Positive | `app/tests/test_qa_component.py` | `web/e2e/board.spec.ts`, `status.spec.ts`, `tailoring.spec.ts` |
+| Negative | same file | `board.spec.ts`, `status.spec.ts` |
+| Boundary | same file | `board.spec.ts` |
+| Error handling | same file + `test_qa_component_containers.py` | `states.spec.ts` |
+
+Three of the Python tests drive the real HTTP clients against a mock upstream
+running in a **Docker container** (`python:3.12-alpine`, standard library only),
+because a `MagicMock` in place of `httpx.get` can verify parsing but can never
+produce the failures that actually break a run — a 500 with an HTML body, a 200
+with a truncated body, a 401 that echoes your API key back. Without a Docker
+daemon those three *skip with a reason* rather than failing, and the other
+seventeen still run.
+
+The UI tests are stubbed at exactly two points — the CV draft and render routes,
+which make ~90-second model calls — and unstubbed everywhere else, so every
+assertion about stored state reads a real database through a real route. They run
+against a seeded fixture board, never `data/seen_jobs.sqlite3`, and `make test-ui`
+brings up everything they need by itself.
+
+**[`QA_REPORT.md`](QA_REPORT.md)** has the full detail: what each of the twenty
+tests protects and why, how the mock upstream and the fixture board are built,
+the two Next.js constraints the harness works around, and the five findings the
+exercise produced — including an `add_job(url="")` key collision, and an epoch
+timestamp stored as a float that is read as "no date", which makes an old posting
+permanently **visible** to the date window instead of hideable by it.
 
 ## Notes on scope
 

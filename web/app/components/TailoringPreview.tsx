@@ -1,7 +1,7 @@
 "use client";
 
 import {useEffect, useMemo, useRef, useState} from "react";
-import {CvPreview, CvRender, CvVerification, DatedJob, StoredTailoring, TailorPhase} from "@/app/types";
+import {CvAttempt, CvPreview, CvRender, CvVerification, DatedJob, StoredTailoring, TailorPhase} from "@/app/types";
 
 type TailoringPreviewProps = {
   job: DatedJob;
@@ -33,6 +33,26 @@ const VERDICT_ADVICE: Record<string, string> = {
     "This draft has not been independently checked, so read the YAML critically before approving.",
 };
 
+/** Past-tense forms for the "drafted, then ..." line, written out rather than
+ *  built by appending "ed": that produced "reviseed" for the most common
+ *  verdict of all. The Python side keeps the same map for the same reason. */
+const PAST_VERDICT: Record<string, string> = {
+  accept: "accepted",
+  revise: "flagged for changes",
+  reject: "rejected",
+  unknown: "unverified",
+};
+
+/** Human names for the drafting failure modes (cv_tailor.FAILURE_MODES). The
+ *  keys are the closed set the lesson store accepts; an unknown key falls back
+ *  to the raw mode rather than being hidden, because a mode the panel cannot
+ *  name is still a thing the drafter was taught. */
+const LEARNED_LABEL: Record<string, string> = {
+  unsupported_ref: "cites references that are not in the master CV",
+  invented_metric: "invents numbers the master does not hold",
+  fabricated_claim: "rewrites a bullet into something the master does not say",
+};
+
 /** The verifier's fields, in the order they should be read. `verdict` and the
  *  model name are handled separately, so they are not listed here. */
 const FINDING_FIELDS: {key: keyof CvVerification; label: string; tone: "bad" | "warn" | "info"}[] = [
@@ -46,11 +66,24 @@ const FINDING_FIELDS: {key: keyof CvVerification; label: string; tone: "bad" | "
 
 /** A finding is only worth rendering if it says something. The schema asks the
  *  model to write "none" when a check is clean, and a wall of "none" buries the
- *  one line that matters. */
+ *  one line that matters.
+ *
+ *  The model writes the verdict word first and THEN explains it — a real clean
+ *  field read "none. No numbers appear anywhere in the draft body...". The old
+ *  pattern anchored a full-string match, so that explanation made a clean field
+ *  render as a red "Numbers not in the master" flag. The marker now counts only
+ *  when it is a complete answer: it ends the string, or is followed by
+ *  sentence-ending punctuation. Kept deliberately tight — "No Azure DevOps claim
+ *  was made" and "None of the refs are valid" must stay visible, or a real
+ *  problem would be hidden rather than shown.
+ *
+ *  Mirrors cv_tailor._NONE_IS_THE_ANSWER; the two must agree, or the panel and
+ *  the escalation critique disagree about what the verifier found. */
 function isRealFinding(text: string | undefined): boolean {
   if (!text) return false;
-  const t = text.trim().toLowerCase();
-  return t.length > 0 && !/^(none|n\/a|no|nothing)\b[.!\s]*$/.test(t);
+  const t = text.trim();
+  if (!t) return false;
+  return !/^(?:none|n\/a|no|nothing)\s*[.!]?\s*$|^(?:none|n\/a|nothing)\s*[.!:]\s/i.test(t);
 }
 
 function Phase({phase}: {phase: TailorPhase}) {
@@ -112,10 +145,24 @@ export default function TailoringPreview({job, stored, onClose, onRendered}: Tai
   }, [stored]);
 
   const verification = preview?.verification ?? storedVerification;
-  // Drafting provenance. The stored record keeps only the final draft and its
-  // verdict, so a previously-tailored job shows one implicit attempt; a fresh
-  // preview reports every attempt, including any cloud re-draft.
-  const attempts = preview?.attempts ?? (stored?.draft_model
+  // Drafting provenance: which model drafted, in what order, and why an earlier
+  // attempt was set aside. A fresh preview reports it directly, and a stored
+  // record now carries what that preview wrote — so reopening a job still shows
+  // the cloud re-draft that was made and lost. Deriving it from `draft_model`
+  // instead was the bug: that column records only the draft that SURVIVED, so an
+  // escalated-then-discarded attempt looked exactly like one that never
+  // happened, and the local draft's verdict read as if no fallback had run.
+  // Records written before the column existed still fall back to one entry.
+  const storedAttempts = useMemo(() => {
+    if (!stored?.attempts) return null;
+    try {
+      const parsed = JSON.parse(stored.attempts);
+      return Array.isArray(parsed) && parsed.length ? (parsed as CvAttempt[]) : null;
+    } catch {
+      return null;
+    }
+  }, [stored]);
+  const attempts = preview?.attempts ?? storedAttempts ?? (stored?.draft_model
     ? [{model: stored.draft_model, verdict: stored.verify_verdict ?? "unknown", reason: null}]
     : []);
   const coverageBefore = preview?.coverage_before ?? rendered?.coverage_before ?? stored?.master_coverage ?? null;
@@ -287,8 +334,18 @@ export default function TailoringPreview({job, stored, onClose, onRendered}: Tai
                             {i + 1}. {a.model.split(":")[0]}
                           </span>{" "}
                           <span className="tailor-note">
-                            {a.reason ?? `drafted, then ${a.verdict}ed by the verifier`}
+                            {a.reason ?? `drafted, then ${PAST_VERDICT[a.verdict] ?? a.verdict} by the verifier`}
                           </span>
+                          {/* The lesson this attempt taught. Shown because the
+                              point of the loop is that the local drafter stops
+                              repeating a proven mistake — and a saving the user
+                              cannot see is indistinguishable from no saving. */}
+                          {a.learned?.length ? (
+                            <div className="tailor-note" style={{marginLeft: 8}}>
+                              Taught the drafter: {a.learned.map((m) => LEARNED_LABEL[m] ?? m).join(", ")}
+                              {" — it is told about this on every future draft."}
+                            </div>
+                          ) : null}
                         </div>
                       ))}
                     </div>

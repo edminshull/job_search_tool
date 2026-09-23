@@ -7,7 +7,14 @@
     "build": "next build",
     "start": "next start",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test lib/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+
+    "//": "UI tests. The board fixture is built and served by e2e/scripts/serve-fixture-board.mjs, which Playwright starts itself — so no manual server or setup step is needed, and nothing here touches data/seen_jobs.sqlite3.",
+    "test:ui": "playwright test --project=chrome-headless",
+    "test:ui:headed": "playwright test --project=chrome-headed",
+    "test:ui:all": "playwright test",
+    "test:ui:report": "playwright show-report",
+    "fixture": "node e2e/scripts/make-fixture-db.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
@@ -17,6 +24,7 @@
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20.14.0",
     "@types/react": "^19.2.0",

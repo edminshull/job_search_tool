@@ -52,6 +52,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 from datetime import date
 from pathlib import Path
 
@@ -922,7 +923,8 @@ def _priority_gap_terms(gap_report: str) -> list[str]:
 
 
 def build_draft_prompt(job: dict, posting: str, gap_report: str, master_yaml: str,
-                       feedback: str | None = None, master_data: dict | None = None) -> str:
+                       feedback: str | None = None, master_data: dict | None = None,
+                       lessons: list[str] | None = None) -> str:
     """Stage 1's user turn.
 
     ORDER IS ARGUMENT, not formatting. The POSTING CONTEXT block comes FIRST,
@@ -960,6 +962,12 @@ and do not add anything to the master to make it true.
     if master_data is not None:
         context = "\n" + posting_context_block(job, master_data, gap_report) + "\n---\n"
 
+    # Both correction blocks sit AFTER the master and immediately before the
+    # submit line, because that is where a model reading top-to-bottom acts on
+    # them. The lessons are the durable rules; the per-run feedback is the
+    # specific correction for THIS attempt, so it goes last and closest.
+    corrections = _lessons_block(lessons) + feedback_block
+
     return f"""Tailor the CV for this job posting.
 {context}
 JOB
@@ -978,7 +986,7 @@ GAP REPORT (what this posting demands, versus what the master can evidence)
 ---
 MASTER CV — THE FACT BASE. Every `ref` you write must be an id below.
 {master_yaml}
-{feedback_block}
+{corrections}
 Submit the tailored CV via submit_tailored_cv."""
 
 
@@ -1065,7 +1073,8 @@ def parse_drafted_yaml(raw: str) -> dict:
 
 
 def draft_cv(job: dict, posting: str, gap_report: str, provider=None,
-             feedback: str | None = None, max_retries: int = 1) -> dict:
+             feedback: str | None = None, max_retries: int = 1,
+             lessons: list[str] | None = None) -> dict:
     """Stage 1: produce a tailored.yaml dict.
 
     A malformed YAML document is retried once with the parser's complaint fed
@@ -1079,7 +1088,7 @@ def draft_cv(job: dict, posting: str, gap_report: str, provider=None,
     master_yaml = master_for_prompt()
     master_data = load_master_data()
     user_content = build_draft_prompt(job, posting, gap_report, master_yaml, feedback,
-                                       master_data=master_data)
+                                       master_data=master_data, lessons=lessons)
 
     last_error = None
     for attempt in range(max_retries + 1):
@@ -1213,6 +1222,39 @@ clean, say accept and write 'none' in each findings field. If you are unsure whe
 reworded bullet still describes the same fact, flag it as a required fix — a fix costs one \
 regeneration, a fabrication costs an interview.
 
+HOW TO READ THE DRAFT YOU ARE GIVEN
+
+The draft is shown RESOLVED: every bullet carries the exact text that will be printed, and \
+each bullet is labelled with where that text came from.
+
+- "# verbatim from master" - this bullet IS the master achievement named by its `ref`, word \
+for word. It cannot overstate anything, because the master already says it, so it is NEVER a \
+required fix, however the master's own wording reads to you.
+- "# REWORDED BY THE DRAFT" - the drafter changed this bullet's wording. This is the bullet to \
+compare against the master achievement under its `ref`, and the only kind of bullet that can \
+contain fabrication.
+
+Do NOT raise a finding about the draft's SHAPE. It is deliberately sparse: it selects by `ref` \
+rather than copying text, it leaves out sections it is not changing, and it may keep every \
+bullet verbatim. "It is only a list of refs", "there is no bullet text", "as submitted it is \
+not a CV", "it is not tailored enough", "the summary is too close to the master's" and \
+anything else about length, formatting, ordering, emphasis or vocabulary are NOT findings. \
+The text is filled in from the master before the document is built, and a draft that reuses \
+the master's wording is the intended safe outcome, not a defect.
+
+A claim that comes from the master's own text is never a draft fabrication, even when the \
+master itself looks internally inconsistent or thin. If you think the MASTER is wrong, put it \
+in `notes` for the candidate to reconcile in cv/master.yaml - do not return it as a required \
+fix, because the drafter may not edit the master and could only close it by inventing \
+something.
+
+`required_fixes` and a `revise` verdict are for FABRICATION and unsupported claims only: a \
+bullet that says more than its master achievement, a metric the master does not hold, a \
+technology the master never mentions, or a ref that is not in the master at all. A draft that \
+claims nothing it cannot support is `accept`, even when `missing_must_haves` is long - those \
+are real gaps in the candidate's history, reported in their own field for the candidate to \
+read, and the CV is not supposed to close them.
+
 Write ASCII punctuation only."""
 
 
@@ -1241,6 +1283,124 @@ Report via submit_verification. Check the refs, the rewrites, the numbers and th
 must-haves separately, and be strict about rewrites that changed what was actually done."""
 
 
+def _master_achievement_index(master_data: dict) -> dict:
+    """achievement id -> the master's own text for it, whitespace-collapsed."""
+    index: dict[str, str] = {}
+    for role in master_data.get("experience") or []:
+        for ach in role.get("achievements") or []:
+            if ach.get("id"):
+                index[ach["id"]] = " ".join(str(ach.get("text") or "").split())
+    return index
+
+
+def _folded_scalar(text: str, indent: int) -> list[str]:
+    """A `text:` key as a wrapped folded block scalar, at `indent` spaces.
+
+    Folded rather than plain or quoted because the drafter's own wording can
+    contain a colon-space or a quote, which would break a plain scalar and make
+    the YAML the verifier is reading unparseable — and the verifier's findings
+    would then be about the envelope rather than the CV."""
+    pad = " " * indent
+    if not text:
+        return [f'{pad}text: ""']
+    body = textwrap.fill(text, width=max(40, 98 - indent))
+    # `>-` strips the trailing newline a block scalar would otherwise clip on,
+    # so the value the verifier reads is exactly the bullet text.
+    return [f"{pad}text: >-"] + [f"{pad}  {line}" for line in body.splitlines()]
+
+
+def resolve_draft_for_verification(draft_yaml_text: str,
+                                   master_data: dict | None = None) -> str:
+    """The draft as the verifier must read it: every bullet carrying its text.
+
+    A tailored draft is deliberately SPARSE. The drafting prompt tells the model
+    that an achievement it is keeping as-is needs only `- ref: <id>`, because the
+    renderer reads the text from the master and copying it would spend output
+    tokens for nothing — and that "a CV whose bullets are all verbatim is fine
+    when the master already says the right thing". The engine does exactly that:
+    scripts/model.py's Tailored.resolved_experience resolves each bullet with
+    `ach_sel.get("text") or ach["text"]`.
+
+    The verifier is not told any of that, and it reads the draft as raw YAML. So
+    the most faithful draft the pipeline can produce — one that selected master
+    achievements verbatim and rewrote nothing — reads to it as "every experience
+    entry is a list of refs with no bullet text ... as submitted it is not a CV
+    and cannot be sent", and it comes back `revise`. That is what happened twice
+    on the Savant QA draft (2026-09-23), and the escalation could not rescue it:
+    the cloud drafter is given the same instruction, so its draft was flagged for
+    the same non-reason, verified "no better", and the original was kept — leaving
+    a false "Needs changes" that no re-draft or edit could clear.
+
+    So the draft is handed over resolved — the document the renderer will
+    actually print — with each bullet labelled by whether its text is the
+    master's own (nothing can be fabricated) or the drafter's rewording (the
+    thing to compare). Nothing is invented here: a ref the master does not hold
+    is kept as-is and labelled, because that IS a finding, and an unparseable
+    draft is passed through untouched so the verifier can say so."""
+    raw = (draft_yaml_text or "").strip()
+    try:
+        draft = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return raw
+    if not isinstance(draft, dict):
+        return raw
+
+    master = master_data if master_data is not None else load_master_data()
+    roles = {r.get("id"): r for r in (master.get("experience") or []) if r.get("id")}
+    achievements = _master_achievement_index(master)
+
+    lines = [
+        "# THE DRAFT, RESOLVED — every bullet below carries the exact text the",
+        "# renderer will print. Check this as the finished CV.",
+        "#",
+        "#   '# verbatim from master'  the bullet IS the master achievement named by",
+        "#                             its ref, word for word. It cannot overstate",
+        "#                             anything the master does not already say.",
+        "#   '# REWORDED BY THE DRAFT' the drafter changed this bullet's wording.",
+        "#                             Compare it against the master achievement",
+        "#                             under its ref — the only bullets that can",
+        "#                             contain fabrication.",
+    ]
+    head = {k: v for k, v in draft.items() if k != "experience"}
+    if head:
+        lines.append(yaml.safe_dump(head, sort_keys=False, allow_unicode=True,
+                                    width=100).rstrip())
+
+    lines.append("experience:")
+    for role_sel in draft.get("experience") or []:
+        ref = role_sel.get("ref") if isinstance(role_sel, dict) else role_sel
+        lines.append(f"  - ref: {ref}")
+        role = roles.get(ref)
+        if role is None:
+            lines.append("    # !! NOT IN THE MASTER CV — report this ref in unsupported_refs")
+            continue
+
+        sels = role_sel.get("achievements") if isinstance(role_sel, dict) else None
+        if sels is None:
+            lines.append("    # `achievements` omitted: the engine prints ALL of this role's")
+            lines.append("    # achievements, which are listed in full below.")
+            sels = [a.get("id") for a in role.get("achievements") or []]
+        lines.append("    achievements:")
+        for sel in sels:
+            aid = sel.get("ref") if isinstance(sel, dict) else sel
+            override = sel.get("text") if isinstance(sel, dict) else None
+            override = " ".join(str(override).split()) if override else ""
+            lines.append(f"      - ref: {aid}")
+            if aid not in achievements:
+                lines.append("        # !! NOT IN THE MASTER CV — report this ref in "
+                             "unsupported_refs")
+                continue
+            if override:
+                lines.append(f"        # REWORDED BY THE DRAFT — compare against master {aid}")
+                text = override
+            else:
+                lines.append("        # verbatim from master — unaltered, cannot be fabricated")
+                text = achievements[aid]
+            lines.extend(_folded_scalar(text, 8))
+
+    return "\n".join(lines) + "\n"
+
+
 def verify_cv(job: dict, draft: dict, posting: str, provider=None) -> dict:
     """Stage 2: check the draft against the master.
 
@@ -1254,7 +1414,11 @@ def verify_cv(job: dict, draft: dict, posting: str, provider=None) -> dict:
     master_yaml = master_for_prompt()
     result = provider.complete(
         VERIFY_SYSTEM,
-        build_verify_prompt(job, master_yaml, draft["yaml_text"], posting),
+        # Resolved, not raw: see resolve_draft_for_verification. A sparse draft
+        # that keeps the master's wording is the intended output, and the raw
+        # YAML reads to a verifier as a CV with no bullets in it.
+        build_verify_prompt(job, master_yaml,
+                            resolve_draft_for_verification(draft["yaml_text"]), posting),
         VERIFY_SCHEMA,
         VERIFY_MAX_TOKENS,
     )
@@ -1456,13 +1620,170 @@ def _verifier_critique(verification: dict) -> str:
               "evidence stays a gap, and the interview prep is where it gets handled.")
 
 
+# The verifier answers a findings field with the verdict word and THEN explains
+# it. The real Savant verification wrote, for a field that was clean:
+#
+#   "none. No numbers appear anywhere in the draft body. The master's only
+#    numeric metrics (6 months, 54 repositories) are not reproduced..."
+#
+# A fullmatch rule reads that as a FINDING, which put a non-finding into the
+# escalation's critique ("INVENTED NUMBERS: none. No numbers appear...") and made
+# the panel render a clean field as a red flag. Since the explain-after-the-
+# verdict style is the verifier's normal one, this fired often.
+#
+# The marker therefore counts only when it is a complete answer: it ends the
+# string, or it is followed by sentence-ending punctuation. Everything else stays
+# a finding. That tightness is the point — a bare "no" is ordinary English, so
+# "No Azure DevOps claim was made" and "None of the refs are valid" must NOT be
+# suppressed, or a real problem would silently vanish from the critique and from
+# the escalation that exists to fix it.
+_NONE_IS_THE_ANSWER = re.compile(
+    r"^(?:none|n/?a|no|nothing)\s*[.!]?\s*$"          # the answer, nothing else
+    r"|^(?:none|n/?a|nothing)\s*[.!:]\s",             # the answer, then an explanation
+    re.IGNORECASE)
+
+
 def _is_none_text(value: str) -> bool:
-    """True for the schema's 'none' placeholder, which is not a finding."""
-    return bool(re.fullmatch(r"(none|n/?a|no|nothing)[.!]?", (value or "").strip(), re.IGNORECASE))
+    """True when a findings field's ANSWER is 'none' — see _NONE_IS_THE_ANSWER."""
+    return bool(_NONE_IS_THE_ANSWER.match((value or "").strip()))
+
+
+
+# ---------------------------------------------------------------------------
+# Lessons: what the drafter has DEMONSTRABLY got wrong before
+# ---------------------------------------------------------------------------
+# The loop this closes. When the verifier flags a local draft, the draft is
+# re-done in the cloud and the corrected version is kept — and until now that was
+# all that happened. The same failure could recur on the next posting and cost
+# another cloud call, because nothing the local model is given changes between
+# runs. So a proven failure is now COUNTED, and once a mode has recurred it is
+# stated to the drafter on every subsequent run.
+#
+# WHAT MAKES THIS SAFE, given that it edits the prompt of every future draft
+#
+# 1. THE MODEL NEVER WRITES THE PROMPT. Only the `remedy` strings below reach it,
+#    and those are written here by hand. The verifier's own words are stored
+#    solely for a human to audit (dedup.drafting_lessons.last_evidence) and are
+#    never a source of prompt text. This is the property that matters: a loop
+#    that teaches the drafter whatever the verifier said would have taught it the
+#    Savant false positive — "ref-only drafts are not CVs" — as a permanent rule,
+#    which is the exact opposite of correct. A loop can only be as right as its
+#    teacher, so the teacher here is code, not a model.
+#
+# 2. THE MODES ARE A CLOSED SET. A finding the verifier invents that maps to no
+#    mode here is not stored at all. There is no free-text channel into the
+#    prompt.
+#
+# 3. EVIDENCE, NOT OPINION. A mode is counted only when escalation PROVED the
+#    local draft worse — the cloud re-draft verified strictly better against the
+#    same verifier. A flagged draft whose retry fared no better teaches nothing,
+#    because the flag alone does not distinguish "the drafter erred" from "the
+#    verifier was noisy", and that ambiguity is exactly what the Savant case was.
+#
+# 4. RECURRENCE BEFORE TEACHING. One sighting may be a posting's quirk, so a mode
+#    is counted until it happens twice and only then stated. dedup.LESSON_THRESHOLD.
+#
+# 5. `missing_must_haves` IS NEVER CONSULTED. Same reasoning as _verifier_critique:
+#    those are real gaps in the candidate's history, and a remedy derived from one
+#    could only read "close this gap", which can only mean inventing it.
+#
+# The honest limit: this only helps with RECURRING, generalizable failures. A
+# one-off posting-specific judgement call is not learnable, and this will reduce
+# cloud escalations without eliminating them.
+FAILURE_MODES: dict[str, dict[str, str]] = {
+    "unsupported_ref": {
+        "finding": "unsupported_refs",
+        "remedy": (
+            "Every `ref` you write must be an id that appears VERBATIM in the master above — "
+            "in `experience[].id` or in that role's `achievements[].id`. Before you submit, "
+            "read your own `experience` section back and check each id, character by character, "
+            "against the master's list. Do not build an id out of a company name, a role title "
+            "or an achievement's wording, and do not reuse an id you saw in the gap report or "
+            "the posting: the only valid ids are the master's."
+        ),
+    },
+    "invented_metric": {
+        "finding": "invented_metrics",
+        "remedy": (
+            "Write no number that is not literally present in the master achievement you are "
+            "citing. An achievement whose `metrics` list is EMPTY has no number — do not supply "
+            "one, do not estimate one, do not round one, and never carry a number across from "
+            "the posting. If a bullet would be stronger with a figure you do not have, leave "
+            "the figure out."
+        ),
+    },
+    "fabricated_claim": {
+        "finding": "fabricated_claims",
+        "remedy": (
+            "Change vocabulary, never facts. Every reworded bullet must survive the question "
+            "\"could the candidate be asked to prove exactly this?\". Work you supported is not "
+            "work you led; a suite you extended is not one you built; testing you have not done "
+            "is not implied by testing you have. Do not adopt the posting's nouns as "
+            "descriptions of the candidate's own history."
+        ),
+    },
+}
+
+# The verifier answers a findings field with a verdict word and then often
+# explains it, so a field that OPENS with the none-marker is clean however much
+# prose follows — see _is_none_text. Deliberately strict, and strict in the
+# conservative direction: a missed finding costs one lesson that would have
+# helped, a false one puts a wrong rule in every future prompt.
+def _reports_a_problem(value: str) -> bool:
+    """True when a verifier findings field names an actual problem."""
+    text = (value or "").strip()
+    return bool(text) and not _is_none_text(text)
+
+
+def proven_failure_modes(verification: dict) -> list[str]:
+    """The modes this verification actually reported, in FAILURE_MODES order.
+
+    Mapping the verifier's structured fields onto a closed set of modes is what
+    keeps model prose out of the prompt: a finding that matches no mode here is
+    dropped rather than passed along."""
+    return [mode for mode, spec in FAILURE_MODES.items()
+            if _reports_a_problem(verification.get(spec["finding"], ""))]
+
+
+def active_remedies(conn) -> list[str]:
+    """The remedy texts for every mode that has recurred enough to be taught."""
+    return [FAILURE_MODES[row["mode"]]["remedy"]
+            for row in dedup.active_lessons(conn) if row["mode"] in FAILURE_MODES]
+
+
+def record_proven_failures(conn, verification: dict) -> list[str]:
+    """Count the failure modes this PROVEN failure exhibited; return their names.
+
+    Call this only where the failure has been proven — see preview()'s escalation
+    branch. The evidence stored alongside each count is the verifier's wording,
+    for a human to audit later; it is not what the drafter is taught."""
+    recorded = []
+    for mode in proven_failure_modes(verification):
+        dedup.record_lesson(conn, mode,
+                            evidence=verification.get(FAILURE_MODES[mode]["finding"], ""))
+        recorded.append(mode)
+    return recorded
+
+
+def _lessons_block(lessons: list[str] | None) -> str:
+    if not lessons:
+        return ""
+    bullets = "\n".join(f"- {lesson}" for lesson in lessons)
+    return f"""
+---
+MISTAKES THIS DRAFTER HAS MADE BEFORE, ON OTHER POSTINGS. Each one below was a
+real draft that had to be rejected and rewritten by a stronger model. They are
+not style preferences and not suggestions — check your own output against every
+one of them before you submit.
+
+{bullets}
+"""
+
 
 
 def _escalate_draft(job: dict, posting: str, gap_report: str, verification: dict,
-                    first_draft: dict, verify_provider, before: dict) -> dict | None:
+                    first_draft: dict, verify_provider, before: dict,
+                    lessons: list[str] | None = None) -> dict | None:
     """Re-draft with the stronger provider, using the verifier's corrections.
 
     Returns None when escalation is not possible, and that is a normal outcome
@@ -1475,7 +1796,12 @@ def _escalate_draft(job: dict, posting: str, gap_report: str, verification: dict
     and it is kept only when the new verdict is genuinely better. Without that,
     a retry that produced something worse would replace a rejected-but-fixable
     draft with a rejected-and-unfixable one, and the verdict shown would be
-    describing the wrong document."""
+    describing the wrong document.
+
+    `improved` in the result is the same comparison, reported rather than
+    implied: it is what turns "the verifier flagged this draft" into "the
+    verifier's flag was RIGHT and a better model fixed it", and only the second
+    of those is evidence enough to teach the drafter a lesson from."""
     critique = _verifier_critique(verification)
     if not critique:
         return None
@@ -1485,13 +1811,14 @@ def _escalate_draft(job: dict, posting: str, gap_report: str, verification: dict
     except llm_providers.ProviderError as exc:
         # No cloud key. Say so in the reason rather than failing — the caller
         # surfaces it so the user knows the local verdict is final, not pending.
-        return {"draft": first_draft, "verification": verification,
+        return {"draft": first_draft, "verification": verification, "improved": False,
                 "reason": f"Not escalated: {exc}"}
 
     try:
-        second = draft_cv(job, posting, gap_report, provider=cloud, feedback=critique)
+        second = draft_cv(job, posting, gap_report, provider=cloud, feedback=critique,
+                          lessons=lessons)
     except (TailorError, llm_providers.ProviderError) as exc:
-        return {"draft": first_draft, "verification": verification,
+        return {"draft": first_draft, "verification": verification, "improved": False,
                 "reason": f"Escalated to {cloud.name} but its draft failed: {exc}"}
 
     recheck = verify_cv(job, second, posting, provider=verify_provider)
@@ -1500,7 +1827,7 @@ def _escalate_draft(job: dict, posting: str, gap_report: str, verification: dict
     # a single comparison decides it.
     rank = {"reject": 0, "unknown": 1, "revise": 2, "accept": 3}
     if rank.get(recheck.get("verdict"), 1) <= rank.get(verification.get("verdict"), 1):
-        return {"draft": first_draft, "verification": verification,
+        return {"draft": first_draft, "verification": verification, "improved": False,
                 "reason": (f"Escalated to {cloud.name}, but its draft verified no better "
                            f"({recheck.get('verdict')} vs {verification.get('verdict')}), "
                            f"so the original is shown")}
@@ -1512,7 +1839,7 @@ def _escalate_draft(job: dict, posting: str, gap_report: str, verification: dict
     # makes a user distrust the surrounding text.
     past = {"reject": "rejected", "revise": "flagged for changes", "accept": "accepted",
             "unknown": "unverified"}
-    return {"draft": second, "verification": recheck,
+    return {"draft": second, "verification": recheck, "improved": True,
             "reason": (f"The {first_draft['provider']} draft was {past.get(first_verdict, first_verdict)} "
                        f"by the verifier, so it was re-drafted with {cloud.name} using those "
                        f"corrections — now {past.get(now_verdict, now_verdict)}")}
@@ -1549,9 +1876,15 @@ def preview(conn, url: str, feedback: str | None = None, include_interview_prep:
     try:
         before = write_gap_report(scratch, job, posting, None)
 
+        # Read ONCE, before drafting, and reused for the escalation. A lesson
+        # learned from THIS run must not apply to this run — it was not evidence
+        # until the escalation's outcome was known, which is below.
+        lessons = active_remedies(conn)
+
         draft = draft_cv(job, posting, _read_report(before), provider=draft_provider,
-                         feedback=feedback)
+                         feedback=feedback, lessons=lessons)
         verification = verify_cv(job, draft, posting, provider=verify_provider)
+        first_verification = verification
         attempts = [{
             "model": f"{draft['provider']}:{draft['model']}",
             "verdict": verification.get("verdict"),
@@ -1578,7 +1911,7 @@ def preview(conn, url: str, feedback: str | None = None, include_interview_prep:
         # to-do list.
         if verification.get("verdict") in ("reject", "revise"):
             escalation = _escalate_draft(job, posting, _read_report(before), verification,
-                                         draft, verify_provider, before)
+                                         draft, verify_provider, before, lessons=lessons)
             if escalation is not None:
                 draft = escalation["draft"]
                 verification = escalation["verification"]
@@ -1587,6 +1920,18 @@ def preview(conn, url: str, feedback: str | None = None, include_interview_prep:
                     "verdict": verification.get("verdict"),
                     "reason": escalation["reason"],
                 })
+
+                # THE LESSON. Recorded only when the retry verified STRICTLY
+                # BETTER, because that is the only thing here that proves the
+                # first draft was wrong. A flag on its own cannot tell "the
+                # drafter erred" from "the verifier was noisy", and counting the
+                # second as the first is how a false positive becomes a permanent
+                # instruction — the Savant flag would have taught the drafter
+                # that ref-only drafts are broken, which is the reverse of true.
+                if escalation.get("improved"):
+                    learned = record_proven_failures(conn, first_verification)
+                    if learned:
+                        attempts[-1]["learned"] = learned
 
         # Re-run the report against the draft so the "after" figure measures the
         # real thing. The draft is written to the scratch dir and read back by
@@ -1625,6 +1970,12 @@ def preview(conn, url: str, feedback: str | None = None, include_interview_prep:
         verify_verdict=verification.get("verdict"),
         verify_notes=json.dumps({k: v for k, v in verification.items()
                                  if k not in ("verify_model", "verdict")}, indent=2),
+        # The provenance, stored rather than left in the response. It cannot be
+        # re-derived from `draft_model`, which records only the draft that
+        # SURVIVED — so an escalated-then-discarded attempt would look identical
+        # to one that never happened, and the user would be told nothing about
+        # the cloud call that was made on their behalf and why it did not help.
+        attempts=json.dumps(attempts),
         master_coverage=before.get("master_coverage"),
         tailored_coverage=after.get("tailored_coverage"),
         error=None,
@@ -1887,7 +2238,30 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("master-status", help="Counts and placeholder state for cv/master.yaml.")
     m.add_argument("--json", action="store_true")
 
+    ls = sub.add_parser("lessons",
+                        help="What the drafter has been taught from its own proven mistakes.")
+    ls.add_argument("--clear", nargs="?", const="ALL", default=None, metavar="MODE",
+                    help="Forget one mode (or all of them with no value) and stop teaching it.")
+
     args = ap.parse_args(argv)
+
+    if args.cmd == "lessons":
+        with dedup.connect() as conn:
+            if args.clear is not None:
+                mode = None if args.clear == "ALL" else args.clear
+                if mode is not None and mode not in FAILURE_MODES:
+                    _emit({"ok": False, "error": f"Unknown mode '{mode}'. Known modes: "
+                                                 f"{', '.join(sorted(FAILURE_MODES))}"})
+                    return 1
+                removed = dedup.clear_lessons(conn, mode)
+                conn.commit()
+                _emit({"ok": True, "cleared": removed,
+                       "scope": mode or "all modes"})
+                return 0
+            _emit({"ok": True, "threshold": dedup.LESSON_THRESHOLD,
+                   "known_modes": sorted(FAILURE_MODES),
+                   "recorded": dedup.all_lessons(conn)})
+            return 0
 
     if args.cmd in ("master-inventory", "master-status"):
         try:

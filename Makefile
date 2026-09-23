@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := run
 
-.PHONY: run test test-web evaluate web cv-setup cv-selftest cv-inventory cv-status
+.PHONY: run test test-web test-ui test-ui-headed evaluate web cv-setup cv-selftest cv-inventory cv-status cv-lessons
 
 # The CV tailoring pipeline runs its vendored scripts with this interpreter, so
 # the rendering dependencies have to live here rather than only in whatever
@@ -38,6 +38,23 @@ test:
 test-web:
 	npm --prefix web test --silent
 	npm --prefix web run typecheck --silent
+
+# The board's UI tests (Playwright, headless Chrome). Self-contained: Playwright
+# resets the fixture database, starts its own `next dev` on port 3100 against it,
+# warms the routes and tears the server down — so this needs no setup step and
+# does NOT disturb a board you already have open on :3000 (see the NEXT_DIST_DIR
+# note in web/next.config.js). It never touches data/seen_jobs.sqlite3.
+#
+# Kept out of `make test` on purpose: it is ~13s and needs Google Chrome, whereas
+# `make test` is seconds and needs nothing but the venv.
+test-ui:
+	npm --prefix web run test:ui --silent
+
+# The same ten tests in a real, visible Chrome window — for watching a journey
+# happen, or demoing it. QA_SLOWMO=300 make test-ui-headed slows each action
+# down enough to follow.
+test-ui-headed:
+	npm --prefix web run test:ui:headed --silent
 
 # Interactive wrapper around `python -m app.ai_evaluate` — asks the questions
 evaluate:
@@ -81,3 +98,11 @@ cv-inventory:
 # What cv/master.yaml currently holds, and whether it is still placeholder data.
 cv-status:
 	$(PY) -m app.cv_tailor master-status
+
+# What the local drafter has been TAUGHT from its own proven mistakes: the
+# failure modes counted so far, how often, and which have recurred enough to be
+# stated on every future draft. `--clear <mode>` is the veto — a lesson that is
+# wrong, or that has stopped being true, must be removable without hand-editing
+# the database.
+cv-lessons:
+	$(PY) -m app.cv_tailor lessons $(ARGS)

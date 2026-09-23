@@ -15,6 +15,8 @@ The real master CV is used, because the refs being validated are its refs. That
 is deliberate: a fixture master would let a real dangling reference pass.
 """
 import json
+import re
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -309,6 +311,157 @@ def test_verifier_is_told_to_treat_reordering_as_correct_and_widening_as_a_lie()
     assert "must-have" in system.lower() or "must-haves" in system.lower()
 
 
+# --- the verifier must be able to SEE the bullets --------------------------
+# The regression these exist for (Savant Recruitment Experts, QA Engineer,
+# 2026-09-23 — and once before it). The drafter is told that an achievement kept
+# as-is needs ONLY `- ref: <id>`, because the renderer reads the text from the
+# master; a CV whose bullets are all verbatim is explicitly a good outcome. So
+# the most faithful draft the pipeline can produce is a list of refs. Handed
+# that raw YAML, the verifier read it as a CV with no bullets in it and returned
+# `revise` with "as submitted it is not a CV and cannot be sent" — and the cloud
+# escalation could not clear it, because the cloud drafter is told the same
+# thing and produces the same shape, so it verified "no better", the original
+# was kept, and the user was left with a "Needs changes" no edit could satisfy.
+
+def _engine_resolved_bullets(draft_text, tmp_path):
+    """The bullet text scripts/model.py itself would print, for comparison.
+
+    Imported by path, because `scripts/` is a directory of programs rather than
+    a package. This is the authority `resolve_draft_for_verification` restates,
+    so the test below compares against it rather than against a copy of its
+    rule."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("cv_engine_model",
+                                                  ct.SCRIPTS / "model.py")
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    path = tmp_path / "tailored.yaml"
+    path.write_text(draft_text, encoding="utf-8")
+    tailored = engine.Tailored.load(path, engine.Master.load())
+    return [[b["text"] for b in role["bullets"]] for role in tailored.resolved_experience()]
+
+
+def _sparse_draft(master_ids, reword=None, omit_achievements=False):
+    """A draft in the shape the drafting prompt asks for: refs, no copied text.
+
+    `reword` is (achievement_id, new_text) for the one bullet the drafter chose
+    to rewrite; everything else stays a bare ref."""
+    roles, achievements = master_ids
+    refs = [{"ref": a} for a in achievements[:3]]
+    if reword:
+        aid, text = reword
+        refs = [{"ref": aid, "text": text} if r["ref"] == aid else r for r in refs]
+    role = {"ref": roles[0]}
+    if not omit_achievements:
+        role["achievements"] = refs
+    return yaml.safe_dump({
+        "summary": "Senior SDET with nine years in FinTech.",
+        "experience": [role],
+    }, sort_keys=False)
+
+
+def test_a_ref_only_draft_reaches_the_verifier_with_every_bullet_spelled_out(master_ids):
+    """The exact failure. A draft that is nothing but refs must arrive at the
+    verifier carrying the master's text for each bullet, so "there is no bullet
+    text" is no longer a reading of it that is available."""
+    resolved = ct.resolve_draft_for_verification(_sparse_draft(master_ids))
+    bullets = yaml.safe_load(resolved)["experience"][0]["achievements"]
+
+    assert len(bullets) == 3
+    assert all(b["text"].strip() for b in bullets), \
+        "a resolved bullet came through with no text — the false finding is still reachable"
+    assert "verbatim from master" in resolved
+
+
+def test_the_resolved_bullets_are_the_engines_own_bullets(master_ids, tmp_path):
+    """Pins the rule to the engine rather than to a copy of it. If scripts/
+    model.py ever changes how a bullet resolves, this fails and the verifier is
+    corrected with it — the alternative is the verifier and the renderer
+    disagreeing about what the CV says, which is the whole bug."""
+    draft = _sparse_draft(master_ids)
+    mine = [[b["text"] for b in role["achievements"]]
+            for role in yaml.safe_load(ct.resolve_draft_for_verification(draft))["experience"]]
+    engine = _engine_resolved_bullets(draft, tmp_path)
+
+    normalise = lambda grid: [[" ".join(t.split()) for t in row] for row in grid]
+    assert normalise(mine) == normalise(engine)
+
+
+def test_an_omitted_achievements_key_expands_to_the_whole_role(master_ids, tmp_path):
+    """`achievements` absent means "all of them" to the engine. Left unexpanded,
+    the verifier sees a role with no bullets at all — the same false finding,
+    one level up."""
+    draft = _sparse_draft(master_ids, omit_achievements=True)
+    resolved = yaml.safe_load(ct.resolve_draft_for_verification(draft))
+    bullets = resolved["experience"][0]["achievements"]
+
+    engine = _engine_resolved_bullets(draft, tmp_path)
+    assert len(bullets) == len(engine[0]) > 3, "the whole role's achievements did not expand"
+    assert all(b["text"].strip() for b in bullets)
+
+
+def test_a_reworded_bullet_is_labelled_as_the_one_to_check(master_ids):
+    """The verifier still has to know WHICH bullets the drafter rewrote —
+    resolving them all to text would hide the rewording, which is the only thing
+    that can fabricate. So the label distinguishes the two cases."""
+    roles, achievements = master_ids
+    resolved = ct.resolve_draft_for_verification(
+        _sparse_draft(master_ids, reword=(achievements[0], "Widened claim not in the master")))
+
+    assert "REWORDED BY THE DRAFT" in resolved
+    assert "Widened claim not in the master" in resolved
+    assert "verbatim from master" in resolved
+    reworded = yaml.safe_load(resolved)["experience"][0]["achievements"][0]
+    assert reworded["ref"] == achievements[0]
+    assert reworded["text"] == "Widened claim not in the master"
+
+
+def test_a_ref_the_master_does_not_hold_is_passed_on_not_dropped():
+    """Reference validity is rule 1. Resolving must not quietly discard the one
+    case the verifier genuinely has to report."""
+    draft = yaml.safe_dump({
+        "summary": "x",
+        "experience": [{"ref": "not-a-role", "achievements": [{"ref": "visa-1"}]},
+                       {"ref": "visa-cc", "achievements": [{"ref": "not-an-achievement"}]}],
+    }, sort_keys=False)
+    resolved = ct.resolve_draft_for_verification(draft)
+
+    assert "not-a-role" in resolved and "not-an-achievement" in resolved
+    assert "NOT IN THE MASTER CV" in resolved
+
+
+def test_an_unparseable_draft_is_still_handed_over(master_ids):
+    """Verification of a broken draft must not itself raise: the verifier is the
+    thing that should be saying so."""
+    assert ct.resolve_draft_for_verification("summary: [unclosed\n  bad: yaml").startswith("summary")
+
+
+def test_verify_cv_sends_the_resolved_draft_not_the_raw_refs(master_ids):
+    """End of the wire: what the verifier's prompt actually contains. Without
+    this the resolver could be perfect and still not be wired in."""
+    draft_text = _sparse_draft(master_ids)
+    provider = StubProvider({"verdict": "accept"})
+    ct.verify_cv({"company": "X", "title": "Y"}, {"yaml_text": draft_text},
+                 "posting text", provider=provider)
+
+    sent = provider.calls[0]["user"]
+    assert "verbatim from master" in sent
+    master_text = " ".join(ct._master_achievement_index(ct.load_master_data())[
+        master_ids[1][0]].split())
+    assert master_text in " ".join(sent.split()), \
+        "the verifier is still being shown bare refs instead of the bullet text"
+
+
+def test_the_verifier_is_told_that_a_sparse_draft_is_not_a_defect():
+    """The prompt half of the fix. A future edit that drops this paragraph
+    silently restores the false "not a CV" verdict, because the model has no
+    other way to know how a bullet resolves."""
+    system = ct.VERIFY_SYSTEM
+    assert "RESOLVED" in system
+    assert "verbatim from master" in system and "REWORDED BY THE DRAFT" in system
+    assert "NOT findings" in system
+
+
 # --- the two-step contract -------------------------------------------------
 def test_preflight_reports_a_missing_local_server_with_the_fix(monkeypatch):
     """A stopped llama-server must produce a sentence naming the command that
@@ -386,6 +539,60 @@ def test_an_unparseable_day_directory_falls_back_to_today():
 
 
 # --- the database record ---------------------------------------------------
+def test_the_drafting_provenance_survives_a_reload(tmp_path):
+    """`attempts` is stored, not derived, because the derivation loses the case
+    that matters: `draft_model` records only the draft that SURVIVED, so a local
+    draft that was escalated to the cloud and then verified no better is
+    indistinguishable from one that was never escalated. That is exactly how the
+    fallback came to look like it had never run."""
+    attempts = [
+        {"model": "local:qwen3-coder-30b-a3b", "verdict": "revise", "reason": None},
+        {"model": "deepseek:deepseek-flash", "verdict": "revise",
+         "reason": "Escalated to deepseek, but its draft verified no better "
+                   "(revise vs revise), so the original is shown"},
+    ]
+    db = tmp_path / "t.db"
+    with dedup.connect(str(db)) as conn:
+        conn.execute("INSERT INTO job_details (url, company, title) VALUES (?, ?, ?)",
+                     ("u1", "Acme", "SDET"))
+        dedup.save_tailoring(conn, "u1", status="draft", draft_model=attempts[0]["model"],
+                             attempts=json.dumps(attempts))
+
+        # Read back through a NEW connection, which is what the panel does: the
+        # value must come off disk rather than out of the writing session.
+    with dedup.connect(str(db)) as conn:
+        got = dedup.get_tailoring(conn, "u1")
+    assert json.loads(got["attempts"]) == attempts
+
+    # A partial save must not clear it — render() rewrites its paths and the
+    # verdict without redrafting, and the provenance predates both.
+    with dedup.connect(str(db)) as conn:
+        dedup.save_tailoring(conn, "u1", status="rendered", pdf_path="/x/cv.pdf")
+        assert json.loads(dedup.get_tailoring(conn, "u1")["attempts"]) == attempts
+
+
+def test_an_existing_database_gains_the_attempts_column(tmp_path):
+    """The real data/seen_jobs.sqlite3 was created before `attempts` existed, and
+    CREATE TABLE IF NOT EXISTS will not add it — _migrate's ALTER list is the
+    only thing that does. Without it the panel's `SELECT *` throws 'no such
+    column' for every tailored CV already in the database.
+
+    The old schema is built by stripping the column out of this module's own
+    SCHEMA, so the fixture is the previous schema rather than a guess at it."""
+    old_schema = re.sub(r"^\s*attempts TEXT,.*$", "", dedup.SCHEMA, flags=re.M)
+    assert "attempts" not in old_schema, "the fixture did not actually strip the column"
+
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.executescript(old_schema)
+    old.commit()
+    old.close()
+
+    with dedup.connect(path) as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(cv_tailorings)")}
+    assert "attempts" in cols
+
+
 def test_tailoring_record_round_trips(tmp_path):
     db = tmp_path / "t.db"
     with dedup.connect(str(db)) as conn:
@@ -635,6 +842,291 @@ def test_escalation_does_nothing_when_there_is_no_critique(monkeypatch):
     assert ct._escalate_draft({"company": "X"}, "posting", "gaps",
                               {"verdict": "unknown", "required_fixes": "none"},
                               _draft(), _SequenceVerifier([]), {}) is None
+
+
+# --- lessons: what the drafter is taught from its own proven mistakes ---------
+# The loop, and why each gate exists. A lesson edits the prompt of every future
+# draft, so the whole design is about making it impossible to teach the drafter
+# something false. The Savant false positive (2026-09-23) is the worked example
+# throughout: a verifier flag on a perfectly good ref-only draft that a naive
+# "learn from the verifier" loop would have turned into a permanent rule against
+# the correct behaviour.
+def test_the_escalation_reports_whether_it_proved_the_first_draft_wrong(monkeypatch):
+    """`improved` is the evidence gate for learning, so it has to be reported
+    rather than inferred. Strictly better is the bar: a retry that merely matched
+    the original's verdict proves nothing about which draft was wrong."""
+    monkeypatch.setattr(ct.llm_providers, "build_provider",
+                        lambda *a, **k: _StubProvider())
+    monkeypatch.setattr(ct, "draft_cv", lambda *a, **k: _draft("df", "deepseek"))
+
+    won = ct._escalate_draft({"company": "A"}, "posting", "gaps", BAD, _draft(),
+                             _SequenceVerifier([GOOD]), {})
+    assert won["improved"] is True, "accept after reject is proof the first draft was wrong"
+
+    monkeypatch.setattr(ct, "draft_cv", lambda *a, **k: _draft("df", "deepseek"))
+    tied = ct._escalate_draft({"company": "A"}, "posting", "gaps", BAD, _draft(),
+                              _SequenceVerifier([BAD]), {})
+    assert tied["improved"] is False, "revise after reject proves nothing"
+
+    monkeypatch.setattr(ct.llm_providers, "build_provider",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            ct.llm_providers.ProviderError("DEEPSEEK_API_KEY: missing")))
+    no_key = ct._escalate_draft({"company": "A"}, "posting", "gaps", BAD, _draft(),
+                                _SequenceVerifier([]), {})
+    assert no_key["improved"] is False
+
+
+def test_a_none_field_with_an_explanation_is_not_a_failure():
+    """Taken verbatim from the real Savant verification: the verifier answers
+    these fields with a verdict word and then explains it. "none. No numbers
+    appear anywhere in the draft body..." is a CLEAN field — the leading `none.`
+    is the answer. Reading it as a finding counted a failure the drafter never
+    made, put a non-finding into the escalation's critique, and made the panel
+    render a clean field as a red flag."""
+    clean = {**GOOD, "invented_metrics":
+             "none. No numbers appear anywhere in the draft body. The master's only "
+             "numeric metrics (6 months, 54 repositories, 32 markets) are not "
+             "reproduced, so nothing is invented and nothing is misattributed."}
+    assert ct.proven_failure_modes(clean) == []
+    assert ct._verifier_critique(clean) == "", "a clean field must not reach the escalation"
+
+    # A field that OPENS with a finding still counts, however it continues.
+    assert ct.proven_failure_modes(
+        {**GOOD, "unsupported_refs": "visa-99 is not an id in the master."}) == ["unsupported_ref"]
+
+
+@pytest.mark.parametrize("value", ["none", "none.", "None", "none!", "n/a", "no", "nothing",
+                                   "none. Explained anyway.", "none: see below"])
+def test_the_none_marker_is_recognised_as_a_complete_answer(value):
+    assert ct._is_none_text(value), f"{value!r} is the clean answer"
+
+
+@pytest.mark.parametrize("value", [
+    "No Azure DevOps claim was made, but the draft invented a metric.",
+    "None of the refs are valid.",
+    "Nothing was invented, however the summary overstates the domain.",
+    "reworded visa-6 into a claim the master does not support",
+])
+def test_ordinary_english_is_not_swallowed_as_the_none_marker(value):
+    """The tightness that makes the rule safe. A bare "no" is ordinary English, so
+    suppressing it would silently drop a real problem from the critique — and from
+    the escalation that exists to fix it."""
+    assert not ct._is_none_text(value), f"{value!r} is a real finding"
+
+
+def test_only_the_three_mechanical_failure_modes_exist():
+    """The mode set is closed, and every mode is one the drafter can actually act
+    on. A mode the verifier invents that maps to none of these is dropped, which
+    is what keeps model prose out of the prompt."""
+    assert set(ct.FAILURE_MODES) == {"unsupported_ref", "invented_metric", "fabricated_claim"}
+    assert all(spec["remedy"].strip() for spec in ct.FAILURE_MODES.values())
+    assert all(spec["finding"] in ct.VERIFY_SCHEMA["input_schema"]["properties"]
+               for spec in ct.FAILURE_MODES.values())
+
+
+def test_gaps_are_never_taught_as_a_lesson():
+    """`missing_must_haves` is excluded for exactly the reason _verifier_critique
+    excludes it: a remedy drawn from a real gap could only read "close this gap",
+    which can only mean inventing it. BAD records only its fabricated claim even
+    though its gaps field is a full paragraph."""
+    assert ct.proven_failure_modes(BAD) == ["fabricated_claim"]
+    assert not any(spec["finding"] == "missing_must_haves"
+                   for spec in ct.FAILURE_MODES.values())
+
+
+def test_a_proven_failure_is_taught_only_once_it_recurs(tmp_path):
+    """One sighting may be a posting's quirk, or one noisy verdict. The count, not
+    the model's opinion, decides when a mode reaches the prompt."""
+    with dedup.connect(str(tmp_path / "t.db")) as conn:
+        once = dedup.record_lesson(conn, "invented_metric", evidence="six months, invented")
+        assert once["hits"] == 1 and once["active_since"] is None
+        assert dedup.active_lessons(conn) == []
+        assert ct.active_remedies(conn) == []
+
+        twice = dedup.record_lesson(conn, "invented_metric", evidence="32 markets, invented")
+        assert twice["hits"] == 2 and twice["active_since"]
+        assert [r["mode"] for r in dedup.active_lessons(conn)] == ["invented_metric"]
+        assert ct.active_remedies(conn) == [ct.FAILURE_MODES["invented_metric"]["remedy"]]
+
+
+def test_the_verifiers_own_words_stay_out_of_the_prompt(tmp_path):
+    """THE safety property, and the reason this is safe to switch on. The prompt
+    text is written by hand in FAILURE_MODES; the verifier's wording is stored
+    only so a human can audit what produced a count. A loop that taught the
+    drafter whatever the verifier said would have taught it the Savant false
+    positive — "ref-only drafts are not CVs" — permanently, which is the exact
+    reverse of correct."""
+    prose = "The draft contains no bullet text at all. As submitted it is not a CV."
+    with dedup.connect(str(tmp_path / "t.db")) as conn:
+        for _ in range(2):
+            dedup.record_lesson(conn, "fabricated_claim", evidence=prose)
+        remedies = ct.active_remedies(conn)
+        stored = dedup.get_lesson(conn, "fabricated_claim")
+
+    assert stored["last_evidence"] == prose, "the evidence must be kept for the human"
+    assert len(remedies) == 1
+
+    prompt = ct.build_draft_prompt({"company": "X", "title": "Y"}, "posting", "gaps",
+                                   "MASTER", lessons=remedies)
+    assert prose not in prompt, "verifier prose reached the drafting prompt"
+    assert remedies[0] in prompt
+
+
+def test_a_mode_outside_the_closed_set_cannot_be_recorded(tmp_path):
+    """The guard on the table itself: a row a model could name is a row that could
+    teach the prompt anything, so unknown modes are refused rather than stored."""
+    with dedup.connect(str(tmp_path / "t.db")) as conn:
+        with pytest.raises(ValueError, match="Unknown drafting failure mode"):
+            dedup.record_lesson(conn, "be more concise and use a nicer tone")
+        assert dedup.all_lessons(conn) == []
+
+
+def test_lessons_are_placed_to_be_acted_on_and_feedback_stays_closest(tmp_path):
+    """Both correction blocks sit after the master, immediately before the submit
+    line — where a model reading top-to-bottom acts on them. The per-run feedback
+    is the specific correction for THIS draft, so it goes last."""
+    remedies = [ct.FAILURE_MODES["unsupported_ref"]["remedy"]]
+    prompt = ct.build_draft_prompt({"company": "X", "title": "Y"}, "posting", "gaps",
+                                   "MASTER", feedback="FEEDBACK_MARKER", lessons=remedies)
+    assert prompt.index("MASTER") < prompt.index(remedies[0])
+    assert prompt.index(remedies[0]) < prompt.index("FEEDBACK_MARKER")
+    assert prompt.index("FEEDBACK_MARKER") < prompt.index("Submit the tailored CV")
+
+    # No lessons, no block: an untaught drafter's prompt is unchanged.
+    plain = ct.build_draft_prompt({"company": "X", "title": "Y"}, "posting", "gaps", "MASTER")
+    assert "MISTAKES THIS DRAFTER HAS MADE BEFORE" not in plain
+
+
+def test_recording_a_proven_failure_counts_every_mode_it_exhibited(tmp_path):
+    """One bad draft can fail more than one way, and each is counted separately —
+    otherwise a drafter that reliably invents numbers AND invents refs would only
+    ever be taught whichever mode happened to be listed first."""
+    both = {**GOOD,
+            "unsupported_refs": "visa-99 is not in the master",
+            "invented_metrics": "Claims 'a team of twelve'."}
+    with dedup.connect(str(tmp_path / "t.db")) as conn:
+        assert ct.record_proven_failures(conn, both) == ["unsupported_ref", "invented_metric"]
+        assert {r["mode"] for r in dedup.all_lessons(conn)} == {"unsupported_ref",
+                                                               "invented_metric"}
+        # A clean verification records nothing at all.
+        assert ct.record_proven_failures(conn, GOOD) == []
+
+
+def test_clearing_a_lesson_stops_it_being_taught(tmp_path):
+    """The user's veto. A lesson that is wrong, or that has stopped being true as
+    the draft prompt changes, must be removable without hand-editing a database."""
+    with dedup.connect(str(tmp_path / "t.db")) as conn:
+        for _ in range(2):
+            dedup.record_lesson(conn, "fabricated_claim")
+        assert ct.active_remedies(conn)
+
+        assert dedup.clear_lessons(conn, "fabricated_claim") == 1
+        assert ct.active_remedies(conn) == []
+        assert dedup.get_lesson(conn, "fabricated_claim") is None
+
+        for _ in range(2):
+            dedup.record_lesson(conn, "invented_metric")
+        assert dedup.clear_lessons(conn) == 1
+        assert dedup.all_lessons(conn) == []
+
+
+@pytest.fixture
+def stubbed_preview(monkeypatch, tmp_path):
+    """preview() with every model call and every subprocess stubbed out.
+
+    The pieces are unit-tested above; this exists to test the WIRING, which is
+    where a loop like this actually breaks — reading the lessons after drafting
+    instead of before, or recording a failure the escalation did not prove,
+    would pass every unit test and still teach the drafter the wrong thing.
+    Returns (conn, prompts_sent_to_the_drafter, the verdict sequence to hand out).
+    """
+    verdicts: list[dict] = []
+    prompts: list[list[str]] = []
+
+    monkeypatch.setattr(ct, "preflight", lambda *a, **k: [])
+    monkeypatch.setattr(ct, "load_job", lambda conn, url: {
+        "company": "Savant", "title": "QA Engineer", "url": url, "location": "London"})
+    monkeypatch.setattr(ct, "_post_text", lambda job: "POSTING")
+    monkeypatch.setattr(ct, "_read_report", lambda parsed: "gaps")
+    monkeypatch.setattr(ct, "write_gap_report", lambda *a, **k: {
+        "path": None, "master_coverage": 75.0, "tailored_coverage": 70.0, "priority_gaps": 2})
+    monkeypatch.setattr(ct, "_existing_record", lambda conn, url: None)
+    monkeypatch.setattr(ct, "_day_and_slug", lambda record, job: ("23-09-26", "savant"))
+    monkeypatch.setattr(ct, "application_dir", lambda d, s: tmp_path / d / s)
+    monkeypatch.setattr(ct.llm_providers, "build_provider",
+                        lambda *a, **k: _StubProvider())
+
+    def fake_draft(job, posting, gap_report, provider=None, feedback=None, lessons=None, **k):
+        prompts.append(list(lessons or []))
+        return {"data": {}, "report": "r", "provider": getattr(provider, "name", "local"),
+                "model": "qwen", "yaml_text": "summary: s\nexperience:\n  - ref: visa-cc\n"}
+
+    monkeypatch.setattr(ct, "draft_cv", fake_draft)
+    monkeypatch.setattr(ct, "verify_cv",
+                        lambda job, draft, posting, provider=None: dict(verdicts.pop(0)))
+
+    with dedup.connect(str(tmp_path / "preview.db")) as conn:
+        conn.execute("INSERT INTO job_details (url, company, title) VALUES ('u1','Savant','QA')")
+        yield conn, prompts, verdicts
+
+
+def test_the_lesson_loop_closes_across_runs(stubbed_preview):
+    """The end-to-end behaviour the whole feature exists for, and the reason it
+    takes three runs rather than two: a lesson learned in a run must not be
+    applied TO that run, because it was not evidence until the escalation's
+    outcome was known.
+
+    Run 1 counts the failure. Run 2 counts it again, which crosses the threshold
+    and starts teaching it. Run 3's draft prompt carries the remedy."""
+    conn, prompts, verdicts = stubbed_preview
+
+    prompts.clear(); verdicts[:] = [BAD, GOOD]
+    ct.preview(conn, "u1")
+    assert [len(p) for p in prompts] == [0, 0], "nothing is taught on a first sighting"
+    assert dedup.get_lesson(conn, "fabricated_claim")["hits"] == 1
+
+    prompts.clear(); verdicts[:] = [BAD, GOOD]
+    ct.preview(conn, "u1")
+    assert [len(p) for p in prompts] == [0, 0], "the run that learns it must not use it"
+    taught = dedup.get_lesson(conn, "fabricated_claim")
+    assert taught["hits"] == 2 and taught["active_since"]
+
+    prompts.clear(); verdicts[:] = [BAD, GOOD]
+    result = ct.preview(conn, "u1")
+    remedy = ct.FAILURE_MODES["fabricated_claim"]["remedy"]
+    assert all(remedy in p for p in prompts), \
+        "every draft in the run must carry the remedy, including the cloud re-draft"
+    assert result["attempts"][-1]["learned"] == ["fabricated_claim"]
+
+
+def test_a_retry_that_verifies_no_better_teaches_nothing(stubbed_preview):
+    """THE GATE, and the Savant case exactly: the local draft was flagged, the
+    cloud re-draft verified `revise` against `revise`, and the original was kept.
+    That flag was not evidence of a drafter error, so nothing may be learned from
+    it — a loop that counted it would have gone on to teach "ref-only drafts are
+    not CVs", the reverse of the truth."""
+    conn, prompts, verdicts = stubbed_preview
+
+    for _ in range(3):
+        verdicts[:] = [BAD, BAD]  # flagged, then flagged again after the retry
+        ct.preview(conn, "u1")
+
+    assert dedup.all_lessons(conn) == [], "an unproven flag must not be counted"
+    assert all(p == [] for p in prompts), "and must never be taught"
+
+
+def test_a_clean_draft_is_escalated_never_and_teaches_nothing(stubbed_preview):
+    """The path that should dominate once the drafter has learned: no flag, no
+    cloud call, no lesson."""
+    conn, prompts, verdicts = stubbed_preview
+
+    verdicts[:] = [GOOD]
+    result = ct.preview(conn, "u1")
+
+    assert result["verification"]["verdict"] == "accept"
+    assert len(result["attempts"]) == 1, "an accepted draft must not be escalated"
+    assert all(p == [] for p in prompts)
+    assert dedup.all_lessons(conn) == []
 
 
 # --- HTML structure preservation for the gap report --------------------------

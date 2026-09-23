@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS cv_tailorings (
     verify_model TEXT,        -- e.g. "deepseek:deepseek-flash"
     verify_verdict TEXT,      -- accept | revise | reject
     verify_notes TEXT,        -- the verifier's findings, verbatim
+    attempts TEXT,            -- JSON: one entry per drafting attempt, in order
     master_coverage REAL,     -- priority-term %, before tailoring
     tailored_coverage REAL,   -- priority-term %, after tailoring
     error TEXT,               -- the failure that stopped the last attempt
@@ -142,6 +143,28 @@ CREATE TABLE IF NOT EXISTS cv_tailorings (
 """
 
 MY_STATUS_VALUES = ["applied", "interview", "rejected", "skipped", "silence"]
+
+# ---------------------------------------------------------------------------
+# drafting_lessons — what the drafter has demonstrably got wrong before
+# ---------------------------------------------------------------------------
+# One row per FAILURE MODE (see cv_tailor.FAILURE_MODES), counted every time the
+# escalation PROVES the drafter made that mistake. The mode names are a fixed,
+# bounded set defined in code, not free text: a table a model can write arbitrary
+# rows into is a table that can teach the prompt anything, including something
+# false. `last_evidence` is the verifier's own wording, kept ONLY so a human can
+# see what produced a count — it is never a source of prompt text.
+LESSON_THRESHOLD = 2
+
+LESSON_SCHEMA = """
+CREATE TABLE IF NOT EXISTS drafting_lessons (
+    mode TEXT PRIMARY KEY,
+    hits INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+    last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
+    active_since TEXT,        -- set when hits reach the threshold; NULL means "not yet taught"
+    last_evidence TEXT        -- human audit only. NEVER injected into a prompt.
+);
+"""
 
 
 def _normalize(text: str) -> str:
@@ -162,7 +185,11 @@ def _migrate(conn) -> None:
     columns added later need an explicit ALTER TABLE for a DB file that
     already exists (e.g. `source`, added 2026-08-12, and the ten contract
     columns added 2026-09-21). Declared as a list of (name, type) so adding
-    the next column is one line and cannot silently drift from SCHEMA."""
+    the next column is one line and cannot silently drift from SCHEMA.
+
+    Both tables are covered: `job_details` and `cv_tailorings` each carry their
+    own column list, because a column added to one of them is invisible to the
+    other's migration."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(job_details)")}
     for column, decl in (
         ("source", "TEXT"),
@@ -186,6 +213,19 @@ def _migrate(conn) -> None:
         if column not in existing:
             conn.execute(f"ALTER TABLE job_details ADD COLUMN {column} {decl}")
 
+    # cv_tailorings needs the same treatment for the same reason. `attempts` is
+    # the drafting provenance — which model drafted, in what order, and why an
+    # earlier attempt was set aside. It is stored rather than derived because the
+    # derivation is not reversible: `draft_model` records only the draft that
+    # SURVIVED, so a record whose local draft was escalated to the cloud and then
+    # lost the comparison is indistinguishable from one that was never escalated.
+    # The user is left looking at a local draft and a verdict with no way to tell
+    # that a cloud retry happened at all.
+    tailoring = {row[1] for row in conn.execute("PRAGMA table_info(cv_tailorings)")}
+    for column, decl in (("attempts", "TEXT"),):
+        if column not in tailoring:
+            conn.execute(f"ALTER TABLE cv_tailorings ADD COLUMN {column} {decl}")
+
 
 @contextmanager
 def connect(db_path: str = DB_PATH):
@@ -194,6 +234,10 @@ def connect(db_path: str = DB_PATH):
         os.makedirs(parent, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA)
+    # A separate CREATE TABLE IF NOT EXISTS rather than a line inside SCHEMA: the
+    # lessons table is new, so an existing database simply gains it, which is the
+    # one case _migrate's ALTER list neither covers nor needs to.
+    conn.executescript(LESSON_SCHEMA)
     _migrate(conn)
     try:
         yield conn
@@ -503,7 +547,7 @@ CV_TAILORING_FIELDS = [
     "status", "day_dir", "company_slug", "tailored_yaml", "report",
     "interview_prep_md", "outdir", "pdf_path", "docx_path", "gap_report_path",
     "interview_prep_path", "draft_model", "verify_model", "verify_verdict",
-    "verify_notes", "master_coverage", "tailored_coverage", "error",
+    "verify_notes", "attempts", "master_coverage", "tailored_coverage", "error",
 ]
 
 
@@ -551,6 +595,75 @@ def iter_tailorings(conn) -> list[dict]:
     cols = ["url"] + CV_TAILORING_FIELDS + ["created_at", "updated_at"]
     cur = conn.execute(f"SELECT {', '.join(cols)} FROM cv_tailorings")
     return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+# --- drafting lessons ------------------------------------------------------
+LESSON_FIELDS = ("mode", "hits", "first_seen", "last_seen", "active_since",
+                 "last_evidence")
+
+
+def record_lesson(conn, mode: str, evidence: str = "",
+                  threshold: int = LESSON_THRESHOLD) -> dict:
+    """Count one PROVEN instance of `mode`, and start teaching it at the threshold.
+
+    `mode` must come from cv_tailor.FAILURE_MODES; passing free text is refused
+    rather than stored, because the whole safety property of this table is that
+    its keys are a closed set — a row a model could name is a row that could
+    teach the prompt something false.
+
+    Returns the row as it now stands, so the caller can say whether this instance
+    tipped the mode into being taught."""
+    from app import cv_tailor  # local import: cv_tailor imports this module
+    if mode not in cv_tailor.FAILURE_MODES:
+        raise ValueError(f"Unknown drafting failure mode: {mode!r}")
+    conn.execute(
+        "INSERT INTO drafting_lessons (mode, hits, last_evidence) VALUES (?, 1, ?) "
+        "ON CONFLICT(mode) DO UPDATE SET hits = hits + 1, "
+        "last_seen = CURRENT_TIMESTAMP, last_evidence = excluded.last_evidence",
+        (mode, (evidence or "")[:400]),
+    )
+    # Promotion is a separate statement so it can be an explicit comparison
+    # rather than a WHERE on the just-written row: a mode becomes taught the
+    # moment it RECURS, and never on a single sighting, which may be one
+    # posting's quirk or one noisy verdict.
+    conn.execute(
+        "UPDATE drafting_lessons SET active_since = CURRENT_TIMESTAMP "
+        "WHERE mode = ? AND active_since IS NULL AND hits >= ?",
+        (mode, threshold),
+    )
+    return get_lesson(conn, mode)
+
+
+def get_lesson(conn, mode: str) -> dict | None:
+    cur = conn.execute(
+        f"SELECT {', '.join(LESSON_FIELDS)} FROM drafting_lessons WHERE mode = ?", (mode,))
+    row = cur.fetchone()
+    return dict(zip(LESSON_FIELDS, row)) if row else None
+
+
+def all_lessons(conn) -> list[dict]:
+    """Every recorded mode, most-proven first. `active_since` NULL means counted
+    but not yet taught."""
+    cur = conn.execute(
+        f"SELECT {', '.join(LESSON_FIELDS)} FROM drafting_lessons "
+        "ORDER BY hits DESC, mode")
+    return [dict(zip(LESSON_FIELDS, row)) for row in cur.fetchall()]
+
+
+def active_lessons(conn) -> list[dict]:
+    """The modes that have recurred enough to be worth stating to the drafter."""
+    return [r for r in all_lessons(conn) if r["active_since"]]
+
+
+def clear_lessons(conn, mode: str | None = None) -> int:
+    """Forget one mode, or all of them. The user's veto: a lesson that is wrong,
+    or that has stopped being true as the draft prompt changes, must be
+    removable without editing a database by hand."""
+    if mode is None:
+        cur = conn.execute("DELETE FROM drafting_lessons")
+    else:
+        cur = conn.execute("DELETE FROM drafting_lessons WHERE mode = ?", (mode,))
+    return cur.rowcount
 
 
 def iter_scored_candidates(conn):

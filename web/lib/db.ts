@@ -252,6 +252,10 @@ export type TailoringRow = {
   verify_model: string | null;
   verify_verdict: string | null;
   verify_notes: string | null;
+  /** JSON array of CvAttempt, written by cv_tailor.preview so the drafting
+   *  provenance — including a cloud re-draft that lost the comparison —
+   *  survives a reload instead of being re-derived from `draft_model`. */
+  attempts: string | null;
   master_coverage: number | null;
   tailored_coverage: number | null;
   error: string | null;
