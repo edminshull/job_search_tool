@@ -13,11 +13,20 @@ import re
 
 import httpx
 
+from app import contract_rates
 from app import filters
+from app import jd_text
 
 USER_AGENT = "job-search-pipeline/0.1 (personal use)"
 TIMEOUT = 20.0
 FULL_JD_TIMEOUT = 10.0  # shorter: this is a best-effort extra request per job, don't let one slow host stall the run
+
+# Adzuna takes a two-letter country code as a path segment. The default stays
+# "ca" so the config this repo originally shipped with keeps working unchanged;
+# set `country` in aggregators.yaml to override it (see fetch_adzuna). Note
+# that Adzuna's code for the United Kingdom is "gb", not "uk".
+ADZUNA_DEFAULT_COUNTRY = "ca"
+ADZUNA_COUNTRY_ALIASES = {"uk": "gb", "usa": "us", "united kingdom": "gb", "great britain": "gb"}
 
 # Companies discovered mid-run: fetch_full_description resolved an Adzuna
 # redirect to a Greenhouse/Lever slug we don't already track in
@@ -227,7 +236,20 @@ def fetch_full_description(redirect_url: str) -> dict:
 
         text = _html_page_to_text(resp.text)
         if text:
-            return {"description": text, "ats": None, "slug": None}
+            # Some redirects land on an Adzuna page that carries the advert
+            # AND the site's navigation, a "Popular Jobs" sidebar and other
+            # companies' listings. Returning that whole page as the job
+            # description corrupted real data (measured 2026-09-21: 53 of the
+            # 72 postings on the board) — a £350-£550/day range belonging to a
+            # neighbouring advert was stored as this job's "stated" rate, and
+            # four unrelated postings ended up with an identical language list
+            # assembled from each other. Extract the advert body instead; only
+            # if there is no recognisable body is the page discarded, so the
+            # caller falls back to Adzuna's own snippet. See app/jd_text.py.
+            body = (jd_text.extract_advert_body(text)
+                    if jd_text.looks_like_listing_page(text) else text)
+            if body:
+                return {"description": body, "ats": None, "slug": None}
 
     # Either the plain request failed outright, or it succeeded but there
     # was nothing usable in the response (e.g. a bot-challenge shell page
@@ -241,7 +263,15 @@ def fetch_adzuna(params: dict) -> list[dict]:
     results, and the free tier's ranking means good matches can be a few
     pages deep. Fetches up to `max_pages` (default 5, set per-aggregator in
     aggregators.yaml), stopping early if a page comes back short (signals
-    we've hit the end of Adzuna's result set for that query)."""
+    we've hit the end of Adzuna's result set for that query).
+
+    `country` (a two-letter Adzuna country code, e.g. "gb", "ca", "us") is
+    pulled from params and used as the API path segment. It used to be
+    HARDCODED to "ca", which meant a user outside Canada could tune `where`
+    to their city, get zero usable results, and have no config-level way to
+    fix it — the request was going to the Canadian endpoint no matter what
+    (found 2026-09 when retuning this repo for London/UK). It is popped, not
+    sent: Adzuna takes country in the path, not as a query param."""
     app_id = os.environ.get("ADZUNA_APP_ID")
     app_key = os.environ.get("ADZUNA_APP_KEY")
     if not app_id or not app_key:
@@ -252,19 +282,35 @@ def fetch_adzuna(params: dict) -> list[dict]:
 
     params = dict(params)  # don't mutate the caller's dict (reused across runs)
     max_pages = params.pop("max_pages", 5)
+    country = str(params.pop("country", ADZUNA_DEFAULT_COUNTRY)).strip().lower()
+    # Adzuna's code for the United Kingdom is "gb", not "uk". A bare "uk" in
+    # aggregators.yaml is a completely reasonable thing to write and would
+    # otherwise 404 against a confusing URL, so translate it rather than
+    # making the user discover Adzuna's ISO-3166 convention by failure.
+    country = ADZUNA_COUNTRY_ALIASES.get(country, country)
+    if not re.fullmatch(r"[a-z]{2}", country):
+        raise ValueError(
+            f"Adzuna 'country' must be a two-letter country code (e.g. 'gb' for "
+            f"the UK), got {country!r}. Check the `country` param in aggregators.yaml."
+        )
     results_per_page = params.get("results_per_page", 50)
 
     jobs = []
     for page in range(1, max_pages + 1):
-        url = f"https://api.adzuna.com/v1/api/jobs/ca/search/{page}"
+        url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
         query = {
             "app_id": app_id,
             "app_key": app_key,
             "content-type": "application/json",
             **params,
         }
-        resp = httpx.get(url, params=query, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT)
-        resp.raise_for_status()
+        try:
+            resp = httpx.get(url, params=query, headers={"User-Agent": USER_AGENT}, timeout=TIMEOUT)
+        except httpx.HTTPError as exc:
+            # Transport errors embed the URL too, credentials and all.
+            raise RuntimeError(_redact(f"Adzuna request failed: {type(exc).__name__}: {exc}",
+                                       app_id, app_key)) from None
+        _check_adzuna_response(resp, app_id, app_key)
         data = resp.json()
         results = data.get("results", [])
         if not results:
@@ -275,6 +321,15 @@ def fetch_adzuna(params: dict) -> list[dict]:
             title = j.get("title", "")
             redirect_url = j.get("redirect_url", "")
             snippet = j.get("description", "")  # Adzuna gives a short snippet, not the full JD
+
+            # Adzuna reports `contract_type` on every result ("permanent",
+            # "contract", or null) but does NOT accept it as a search
+            # parameter — passing it to the API is a 400. To ask Adzuna for
+            # contract roles only, aggregators.yaml uses the boolean
+            # `contract=1` instead (verified live 2026-09-21: contract=1
+            # returned 66 results and every one had contract_type=contract).
+            contract_type = (j.get("contract_type") or "").strip().lower()
+            employment_type = contract_type if contract_type in ("permanent", "contract") else "unknown"
 
             description = snippet
             company_name = (j.get("company") or {}).get("display_name", "Unknown")
@@ -303,11 +358,84 @@ def fetch_adzuna(params: dict) -> list[dict]:
                 "url": redirect_url,
                 "posted_at": j.get("created"),
                 "description": description,
+                "employment_type": employment_type,
+                **_adzuna_day_rate(j, employment_type),
             })
 
         if len(results) < results_per_page:
             break  # short page -> no more results, stop paginating early
     return jobs
+
+
+def _redact(text: str, *secrets: str) -> str:
+    """Strip credential values out of a string before it reaches a log.
+
+    Adzuna takes app_id/app_key as QUERY PARAMETERS (its API rejects HTTP Basic
+    auth with a 400, so there is nowhere else to put them). httpx puts the full
+    request URL into HTTPStatusError and transport-error messages, so a single
+    failed Adzuna call prints the app_key into stderr, any log file, and the
+    terminal's scrollback. Observed for real on 2026-09-21: a 401 wrote a live
+    key into the transcript. Redact on the way out."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+def _check_adzuna_response(resp: "httpx.Response", app_id: str, app_key: str) -> None:
+    """Replacement for resp.raise_for_status() that cannot leak credentials,
+    and that names the two failures actually worth diagnosing."""
+    if resp.status_code == 200:
+        return
+    if resp.status_code == 401:
+        raise RuntimeError(
+            "Adzuna rejected the credentials (401 AUTH_FAIL).\n"
+            "  ADZUNA_APP_ID must be the *Application ID* shown on your Adzuna "
+            "dashboard — a short generated code, NOT your account username or "
+            "email address. ADZUNA_APP_KEY must be an Application Key from that "
+            "same application.\n"
+            "  Check https://developer.adzuna.com, and rotate the key if it has "
+            "ever appeared in a log or terminal output."
+        )
+    body = _redact((resp.text or "")[:300], app_id, app_key)
+    raise RuntimeError(f"Adzuna request failed: HTTP {resp.status_code} {body}")
+
+
+def _adzuna_day_rate(payload: dict, employment_type: str) -> dict:
+    """Recover a day rate from Adzuna's ANNUALISED contract salary.
+
+    Adzuna reports contract pay as a yearly figure, not a daily one, so a
+    £500/day role arrives as salary_min/salary_max around £130,000. The
+    divisor is not documented; it was measured against live ads on
+    2026-09-21 — for every contract ad that quoted BOTH a stated day rate
+    and a salary, salary_max / stated rate was exactly 260 (5 days x 52
+    weeks, i.e. no holiday and no bench time). 260 is confirmed by the vast
+    majority of samples, so that is the divisor used here.
+
+    Both figures are tagged with a `day_rate_source` so the board can show
+    them as DERIVED rather than stated, and Adzuna's own estimate
+    (salary_is_predicted=1, i.e. not from the advert at all) is tagged
+    differently again — it is the weakest of the three signals, and
+    contract_rates.evaluate_contract prefers a rate stated in the posting
+    text over either.
+
+    Returns {} for permanent roles or when no salary is given, so the caller
+    can splat it straight into the job dict."""
+    if employment_type != "contract":
+        return {}
+    smin = payload.get("salary_min")
+    smax = payload.get("salary_max")
+    if not smin and not smax:
+        return {}
+    days = contract_rates.default_model().adzuna_annualisation_days
+    top = smax or smin
+    return {
+        "day_rate_min": (smin / days) if smin else None,
+        "day_rate_max": top / days,
+        "day_rate_source": ("estimated_by_adzuna"
+                            if str(payload.get("salary_is_predicted", "0")) == "1"
+                            else "derived_from_advertised_salary"),
+    }
 
 
 def fetch_remotive(params: dict) -> list[dict]:
@@ -318,6 +446,13 @@ def fetch_remotive(params: dict) -> list[dict]:
 
     jobs = []
     for j in data.get("jobs", []):
+        # Remotive's `job_type` is its own vocabulary (full_time, contract,
+        # freelance, part_time, internship, other); only the contract-shaped
+        # ones matter here, and anything unmapped stays "unknown" rather
+        # than being guessed at.
+        raw_type = (j.get("job_type") or "").strip().lower()
+        employment_type = "contract" if raw_type in ("contract", "freelance") else (
+            "permanent" if raw_type == "full_time" else "unknown")
         jobs.append({
             "company": j.get("company_name", "Unknown"),
             "title": j.get("title", ""),
@@ -325,6 +460,7 @@ def fetch_remotive(params: dict) -> list[dict]:
             "url": j.get("url", ""),
             "posted_at": j.get("publication_date"),
             "description": j.get("description", ""),  # full HTML per Remotive's docs
+            "employment_type": employment_type,
         })
     return jobs
 

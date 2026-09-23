@@ -4,52 +4,179 @@
 # at the cost of more noise, which is exactly what filters.py exists for.
 #
 # type: one of "adzuna" | "remotive"
-# params: passed straight through to that aggregator's search API, EXCEPT
+# params: passed straight through to that aggregator's search API, EXCEPT:
 #   max_pages (adzuna only) — a pipeline-level control consumed by
-#   fetch_adzuna() before building the request, not sent to Adzuna itself.
+#     fetch_adzuna() before building the request, not sent to Adzuna itself.
+#   country   (adzuna only) — the two-letter country code for the API path.
+#     "gb" is the United Kingdom; Adzuna does NOT use "uk", but writing "uk"
+#     here is translated to "gb" for you. Defaults to "ca" if omitted.
 #
-# EDIT ME: every Adzuna entry's `where` below is Alberta/Canada (the
-# original author's search) and `what` targets their keywords/stack.
-# Replace both with your own location and role keywords — and make sure
-# they match filters.yaml's location_allow_patterns/stack_core, or a real
-# result will still get filtered out downstream.
+# RETUNED FOR ED, 2026-09: London/UK, senior SDET / test automation.
+# The location codes and keywords here MUST stay consistent with
+# filters.yaml's location_allow_patterns, or every result gets fetched and
+# then thrown away downstream — see the note on the last entry.
+#
+# Adzuna's free tier is rate-limited and its `where` is a place name, not a
+# filter: omitting `where` searches the whole country, which is how the
+# UK-wide entry below works.
+#
+# TWO ADZUNA PARAMETERS WORTH KNOWING (both verified live, 2026-09-21):
+#
+#   max_days_old: N   Server-side recency filter — only postings Adzuna
+#     indexed within the last N days come back. This is what keeps the board
+#     to recent postings instead of re-offering a role first advertised in
+#     April. Every query below carries it. It bounds DISCOVERY, so a posting
+#     older than the window is never fetched again (seen_jobs already
+#     dedupes it, so this costs nothing and saves API calls).
+#
+#   contract: 1       Server-side contract-only filter. NOTE that the
+#     obvious-looking alternative does not work: `contract_type` is a FIELD
+#     IN ADZUNA'S RESPONSE, not a request parameter, and sending it as one
+#     returns HTTP 400. `contract=1` returned 66 results for "QA engineer"
+#     in London and every single one had contract_type=contract, so it is a
+#     real filter, not a relevance boost. `permanent=1` is its mirror.
+#
+# The contract queries are separate entries rather than a flag on the
+# permanent ones because a contract search needs a much wider net: contract
+# ads are a minority of all postings, and most do not state a day rate, so
+# they have to be fetched on their own terms. See contract.yaml for the
+# day-rate thresholds they are judged against.
 
 aggregators:
-  - name: Adzuna (Canada, software engineer)
+  - name: Adzuna (UK, London, test automation)
     type: adzuna
     params:
-      what: "software engineer"
-      where: "Alberta"
+      what: "test automation engineer"
+      where: "London"
+      country: "gb"
       results_per_page: 50
       max_pages: 5   # up to 250 results; stops early if a page comes back short
+      max_days_old: 30
     notes: >
       Requires free app_id/app_key from https://developer.adzuna.com (instant
       signup, no approval wait per their docs — exact rate limit wasn't
       confirmed in research, check your account dashboard after signup).
       Set ADZUNA_APP_ID / ADZUNA_APP_KEY as environment variables.
 
-  - name: Adzuna (Canada, remote backend/fullstack)
+  - name: Adzuna (UK-wide, SDET / QA automation)
     type: adzuna
     params:
-      what: "backend engineer OR full stack"
-      where: "Canada"
+      what: "SDET OR QA automation"
+      country: "gb"
       results_per_page: 50
       max_pages: 5
+      max_days_old: 30
+    notes: >
+      No `where` on purpose: that searches the whole of the UK rather than a
+      radius around one city, which is what catches UK-remote roles that a
+      London-scoped query misses. filters.yaml then drops anything that isn't
+      London or an explicitly UK-remote posting.
 
-  - name: Adzuna (Canada, remote senior software engineer)
+  - name: Adzuna (UK, London, senior test engineer)
     type: adzuna
     params:
-      what: "software engineer"
-      where: "Canada"
+      what: "senior test engineer"
+      where: "London"
+      country: "gb"
       results_per_page: 50
-      max_pages: 1
+      max_pages: 1   # cheapest of the three; overlaps the others by design
+      max_days_old: 30
+
+  # Added on request. None of the queries above matches this phrase: "test
+  # automation engineer" and "senior test engineer" both key off "test
+  # engineer", and "SDET OR QA automation" keys off "QA automation" — so a
+  # posting titled exactly "Senior QA Engineer" was invisible to all three,
+  # even though filters.yaml has always accepted the title (it matches the
+  # "qa engineer" allow keyword). 100 UK matches at the time of adding.
+  #
+  # London-scoped rather than UK-wide for cost control: filters.yaml's location
+  # patterns allow a bare "United Kingdom", so a UK-wide query would also admit
+  # non-London on-site roles (Manchester, Leeds) that then get paid for by the
+  # AI step. Delete the `where` line for UK-wide coverage if that trade is
+  # worth it.
+  - name: Adzuna (UK, London, senior QA engineer)
+    type: adzuna
+    params:
+      what: "senior QA engineer"
+      where: "London"
+      country: "gb"
+      results_per_page: 50
+      max_pages: 3
+      max_days_old: 30
+    notes: >
+      Adzuna's `what` is keyword matching, not exact-phrase, so this also
+      returns plain "QA Engineer" and "QA Test Engineer" roles. That is fine:
+      filters.yaml decides what is in scope, and dedup collapses anything the
+      other queries already produced.
+
+  # ---------------------------------------------------------------------
+  # CONTRACT ROLES
+  #
+  # Judged against the day rates in contract.yaml, not against a salary
+  # band. `python -m app.contract_rates` prints those rates and the working.
+  # A contract posting whose STATED rate falls below the equivalent floor is
+  # dropped by filters.passes_filters; one that states no rate is kept and
+  # flagged, because most contract ads do not quote one.
+  #
+  # 90 days rather than 30: contract roles stay open far longer than
+  # permanent ones, and a 30-day window on a pool this much smaller threw
+  # away live roles. The dashboard's own window still defaults to 30 days,
+  # so shortlisting is unaffected.
+  # ---------------------------------------------------------------------
+  - name: Adzuna (UK, London, contract test automation)
+    type: adzuna
+    params:
+      what: "test automation"
+      where: "London"
+      country: "gb"
+      contract: 1
+      results_per_page: 50
+      max_pages: 3
+      max_days_old: 90
+    notes: >
+      `contract: 1` restricts Adzuna to contract postings only. Wider
+      keywords than the permanent queries on purpose: contract ads are a
+      small minority of the pool, so the title search has to be looser and
+      filters.yaml's allowlist does the narrowing instead.
+
+  - name: Adzuna (UK, London, contract QA engineer)
+    type: adzuna
+    params:
+      what: "QA engineer"
+      where: "London"
+      country: "gb"
+      contract: 1
+      results_per_page: 50
+      max_pages: 3
+      max_days_old: 90
+
+  - name: Adzuna (UK-wide, contract SDET / automation)
+    type: adzuna
+    params:
+      what: "SDET OR automation test"
+      country: "gb"
+      contract: 1
+      results_per_page: 50
+      max_pages: 3
+      max_days_old: 90
+    notes: >
+      UK-wide and contract together: day-rate work is much more often
+      fully remote than permanent work, so the London radius would miss
+      most of it. filters.yaml still requires an explicit UK signal in the
+      location string, so a US-remote contract is dropped.
 
   - name: Remotive (software-dev category)
     type: remotive
     params:
       category: "software-dev"
     notes: >
-      No auth needed. Remote-only listings (won't catch Alberta on-site
-      roles). Remotive asks for max 4 requests/day and max 2/minute — keep
-      this to one call per pipeline run. Listings are delayed 24h from
-      posting per their terms.
+      No auth needed. Remote-only listings, and its `candidate_required_location`
+      is often "Worldwide"/"EMEA"/"USA" rather than a country — filters.yaml
+      deliberately requires an explicit UK signal in the location string, so
+      worldwide-remote listings from this source will be dropped rather than
+      assumed to accept UK applicants. Lower yield than the Adzuna entries,
+      kept for the ones that DO name the UK. Remotive asks for max 4
+      requests/day and max 2/minute — keep this to one call per pipeline run.
+      Listings are delayed 24h from posting per their terms.
+      Its `job_type` is mapped to employment_type, so contract and freelance
+      listings here are judged against the day-rate floor too.

@@ -1,7 +1,13 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := run
 
-.PHONY: run test evaluate web
+.PHONY: run test test-web evaluate web cv-setup cv-selftest cv-inventory cv-status
+
+# The CV tailoring pipeline runs its vendored scripts with this interpreter, so
+# the rendering dependencies have to live here rather than only in whatever
+# python happens to be on PATH. See `cv-setup`.
+VENV := $(CURDIR)/.venv
+PY := $(VENV)/bin/python
 
 # Interactive wrapper around `python -m app.main` — asks the questions
 # instead of you having to remember the argparse flags.
@@ -15,15 +21,23 @@ run:
 	[[ "$$ans" =~ ^[Nn] ]] && discovery_flag="--skip-discovery"; \
 	read -rp "Only one company slug? (blank = all) " slug; \
 	[[ -n "$$slug" ]] && company_flag="--company $$slug"; \
-	python -m app.main $$companies_flag $$aggregators_flag $$discovery_flag $$company_flag
+	$(PY) -m app.main $$companies_flag $$aggregators_flag $$discovery_flag $$company_flag
 
 # Automated test suite: pytest-style tests plus the standalone main()-style
-# sanity scripts that print their own pass/fail summary.
+# sanity scripts that print their own pass/fail summary, plus the web app's
+# date-parsing tests (Node's built-in runner — Node >= 23 strips the
+# TypeScript types itself, so there is no transpile step or jest/vitest).
 test:
-	python -m pytest app/ -q
-	python -m app.tests.test_pipeline
-	python -m app.tests.test_discover_companies
-	python -m app.tests.test_ai_evaluate
+	$(PY) -m pytest app/ -q
+	$(PY) -m app.tests.test_pipeline
+	$(PY) -m app.tests.test_discover_companies
+	$(PY) -m app.tests.test_ai_evaluate
+	npm --prefix web test --silent
+
+# Just the web app's tests + typecheck, for when you are only touching web/.
+test-web:
+	npm --prefix web test --silent
+	npm --prefix web run typecheck --silent
 
 # Interactive wrapper around `python -m app.ai_evaluate` — asks the questions
 evaluate:
@@ -32,7 +46,38 @@ evaluate:
 	[[ ! "$$ans" =~ ^[Nn] ]] && dry_run_flag="--dry-run"; \
 	read -rp "Do you want to set a limit? (blank = all) " limit_val; \
 	[[ -n "$$limit_val" ]] && limit_flag="--limit $$limit_val"; \
-	python -m app.ai_evaluate $$dry_run_flag $$limit_flag
+	$(PY) -m app.ai_evaluate $$dry_run_flag $$limit_flag
 
 web:
 	DB_PATH=$(CURDIR)/data/seen_jobs.sqlite3 npm --prefix web run dev
+
+# --- CV tailoring -----------------------------------------------------------
+
+# One-time (and after any requirements.txt change): create the venv the CV
+# pipeline runs in. Without it the Tailor CV button fails with an instruction to
+# run this, rather than an ImportError from three frames deep.
+cv-setup:
+	python3 -m venv $(VENV)
+	$(PY) -m pip install --upgrade pip
+	$(PY) -m pip install -r requirements.txt
+
+# The vendored engine's own test suite: 198 checks on the tailoring pipeline,
+# including that it hard-fails on a fabricated skill. Run after touching
+# anything under scripts/ — the fabrication guard is the reason the output can
+# be trusted, so it is worth knowing it still works.
+cv-selftest:
+	$(PY) scripts/selftest.py
+
+# Re-render the master full inventory at the ROOT of cv_output/.
+#
+# ON DEMAND ONLY, by design — a tailoring run never triggers this. Update it when
+# a new skill or achievement genuinely exists (Ed, 2026-09-23). The tailoring
+# preview lists the posting terms cv/master.yaml cannot evidence, which is the
+# evidence needed to decide; the master itself is edited by hand, because only a
+# person can say whether a fact is real.
+cv-inventory:
+	$(PY) -m app.cv_tailor master-inventory
+
+# What cv/master.yaml currently holds, and whether it is still placeholder data.
+cv-status:
+	$(PY) -m app.cv_tailor master-status

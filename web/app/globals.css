@@ -92,6 +92,71 @@ tbody td { padding: 10px 14px; font-size: 14px; vertical-align: middle; }
 
 .my-status-select { font-size: 12px; padding: 3px 6px; }
 
+/* --- posting date ------------------------------------------------------ */
+.date-cell { white-space: nowrap; font-size: 13px; font-variant-numeric: tabular-nums; }
+.date-cell.age-fresh  { color: var(--apply-fg); font-weight: 600; }
+.date-cell.age-recent { color: var(--text); }
+.date-cell.age-ok     { color: var(--text-dim); }
+/* Past the default 30-day window: visibly faded, so an old advert is
+   obvious without having to read the date. */
+.date-cell.age-stale  { color: var(--text-dim); opacity: 0.55; }
+.date-cell.age-stale::after { content: " ⚠"; }
+.date-cell.age-unknown { color: var(--text-dim); font-style: italic; }
+
+/* --- contract chips and rate ------------------------------------------ */
+.chip {
+  display: inline-block; padding: 2px 7px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; white-space: nowrap; margin-left: 6px;
+  background: var(--unev-bg); color: var(--unev-fg);
+}
+.contract-chip { background: var(--interview-bg); color: var(--interview-fg); }
+.chip.rate-pass    { background: var(--apply-bg); color: var(--apply-fg); }
+.chip.rate-review  { background: var(--consider-bg); color: var(--consider-fg); }
+.chip.rate-fail    { background: var(--skip-bg); color: var(--skip-fg); }
+.chip.rate-unknown { background: var(--unev-bg); color: var(--unev-fg); }
+
+/* --- language fit and clearance --------------------------------------- */
+.lang-cell { white-space: nowrap; }
+/* Java/Ruby — the priority languages, so this is the one chip that reads as
+   a positive rather than a warning. */
+.chip.lang-priority  { background: var(--apply-bg); color: var(--apply-fg); }
+.chip.lang-secondary { background: var(--applied-bg); color: var(--applied-fg); }
+/* Neither good nor bad: the advert simply never named a language. */
+.chip.lang-none      { background: var(--unev-bg); color: var(--text-dim); font-weight: 400; }
+.chip.lang-mismatch  { background: var(--skip-bg); color: var(--skip-fg); }
+.chip.clearance-possible { background: var(--consider-bg); color: var(--consider-fg); }
+.chip.clearance-blocked  { background: var(--skip-bg); color: var(--skip-fg); }
+
+.rate-cell { white-space: nowrap; font-size: 13px; }
+.rate-value { font-variant-numeric: tabular-nums; font-weight: 600; }
+.rate-unit { color: var(--text-dim); font-weight: 400; }
+.rate-derived {
+  margin-left: 5px; font-size: 10px; color: var(--text-dim);
+  border-bottom: 1px dotted var(--text-dim); cursor: help;
+}
+.rate-missing { color: var(--consider-fg); font-size: 12px; }
+.rate-none { color: var(--text-dim); }
+.title-text { vertical-align: middle; }
+
+/* --- date-window notice ----------------------------------------------- */
+.window-note {
+  padding: 8px 28px; background: var(--panel); border-bottom: 1px solid var(--border);
+  font-size: 12px; color: var(--text-dim);
+}
+.link-btn {
+  background: none; border: none; padding: 0 0 0 6px; margin: 0;
+  color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline;
+}
+
+/* --- contract block in the detail panel ------------------------------- */
+.contract-block {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;
+}
+.contract-row { display: flex; gap: 12px; padding: 3px 0; font-size: 13px; }
+.contract-key { flex: 0 0 150px; color: var(--text-dim); }
+.contract-evidence { color: var(--text-dim); font-size: 12px; }
+.contract-reason { margin-top: 8px; font-size: 12px; color: var(--text-dim); font-style: italic; }
+
 .empty-state, .loading-state, .error-state { text-align: center; color: var(--text-dim); padding: 60px 20px; }
 .error-state { color: var(--rejected-fg); }
 
@@ -124,4 +189,107 @@ textarea {
   background: var(--accent); color: white; cursor: pointer; text-decoration: none; display: inline-block;
 }
 .btn.secondary { background: transparent; color: var(--accent); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .save-status { font-size: 12px; color: var(--text-dim); }
+
+/* --- tailored CV ------------------------------------------------------- */
+.cv-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.chip.cv-ok   { background: var(--apply-bg); color: var(--apply-fg); }
+.chip.cv-warn { background: var(--consider-bg); color: var(--consider-fg); }
+.chip.cv-bad  { background: var(--skip-bg); color: var(--skip-fg); }
+.tailor-note { font-size: 12px; color: var(--text-dim); margin: 8px 0 0; line-height: 1.55; }
+.tailor-note code, #panel-body code {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  padding: 1px 4px; font-size: 11.5px;
+}
+
+/* The overlay is wider than the job panel: the draft is a YAML document and
+   wrapping it at 960px makes it unreadable. */
+.tailor-panel { max-width: 1080px; }
+
+.tailor-phases { display: flex; gap: 14px; margin-top: 12px; flex-wrap: wrap; }
+.tailor-phase { font-size: 12px; color: var(--text-dim); }
+.tailor-phase.active { color: var(--accent); font-weight: 600; }
+.tailor-phase.done { color: var(--apply-fg); }
+
+.tailor-progress { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+.tailor-spinner {
+  width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  animation: tailor-spin 0.8s linear infinite;
+}
+@keyframes tailor-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .tailor-spinner { animation-duration: 2.4s; }
+}
+
+.tailor-error {
+  background: var(--skip-bg); color: var(--skip-fg); border-radius: 8px;
+  padding: 12px 14px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word;
+  border: 1px solid var(--border); margin: 0;
+}
+
+.tailor-verdict { border-radius: 8px; padding: 10px 14px; font-size: 13.5px; }
+.tailor-verdict.v-accept  { background: var(--apply-bg); color: var(--apply-fg); }
+.tailor-verdict.v-revise  { background: var(--consider-bg); color: var(--consider-fg); }
+.tailor-verdict.v-reject  { background: var(--skip-bg); color: var(--skip-fg); }
+.tailor-verdict.v-unknown { background: var(--unev-bg); color: var(--unev-fg); }
+/* The next step, not just the verdict. A verdict with no action reads as a dead
+   end — which is how the first rejection was experienced. */
+.tailor-verdict-advice {
+  margin-top: 6px; padding-top: 6px; font-size: 12.5px; line-height: 1.5;
+  border-top: 1px solid rgba(0, 0, 0, 0.12); opacity: 0.95;
+}
+
+/* Drafting provenance: one row per attempt when a rejection triggered a
+   cloud re-draft. */
+.tailor-escalation {
+  margin-top: 12px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; background: var(--bg);
+}
+.tailor-attempt { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; }
+.tailor-attempt .tailor-note { margin: 0; }
+
+.tailor-finding { border-left: 3px solid var(--border); padding: 6px 0 6px 12px; margin-top: 12px; }
+.tailor-finding.f-bad  { border-left-color: var(--skip-fg); }
+.tailor-finding.f-warn { border-left-color: var(--consider-fg); }
+.tailor-finding.f-info { border-left-color: var(--accent); }
+.tailor-finding-label {
+  font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.03em; color: var(--text-dim);
+}
+.tailor-finding-body { font-size: 13px; white-space: pre-wrap; line-height: 1.55; }
+
+.tailor-coverage { display: flex; align-items: center; gap: 18px; }
+.tailor-cov-num { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tailor-cov-arrow { color: var(--text-dim); font-size: 20px; }
+
+.tailor-yaml {
+  width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.5; min-height: 320px;
+}
+.tailor-edited { color: var(--consider-fg); font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+.tailor-details { margin-top: 18px; }
+.tailor-details summary { cursor: pointer; font-size: 13px; color: var(--accent); }
+.tailor-details textarea { margin-top: 10px; }
+.tailor-pre {
+  font-size: 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.55;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 12px 14px; margin-top: 10px; max-height: 420px; overflow-y: auto;
+}
+
+.tailor-check {
+  display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px;
+  color: var(--text-dim); cursor: pointer;
+}
+.tailor-done { border: 1px solid var(--border); border-radius: 8px; padding: 14px; background: var(--bg); }
+.tailor-files { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* A role still advertised whose posted date is stale. Deliberately quieter than
+   the age colouring it sits beside: the point is to stop a live job being hidden,
+   not to shout about it. */
+.listed-chip {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 10px;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+  background: var(--applied-bg); color: var(--applied-fg); white-space: nowrap;
+}

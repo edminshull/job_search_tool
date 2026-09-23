@@ -85,6 +85,18 @@ def main():
         queue_after = dedup.get_unevaluated_candidates(conn)
         assert len(queue_after) == 0, "job should no longer be in the unevaluated queue after scoring"
 
+        # --rescore needs the whole board, scored rows included. Without this
+        # there was no way to refresh a stale score: a score is only
+        # comparable to another made from the same prompt and the same stored
+        # text, and both change.
+        rescore_queue = dedup.get_unevaluated_candidates(conn, include_evaluated=True)
+        assert len(rescore_queue) == 1, (
+            f"include_evaluated should return the scored row too, got {len(rescore_queue)}")
+        assert rescore_queue[0]["url"] == job["url"]
+        # ...and a row that never passed the filters is in NEITHER queue.
+        dedup.save_details(conn, dict(job, url="https://ex.com/rejected"), passed_filters=False)
+        assert len(dedup.get_unevaluated_candidates(conn, include_evaluated=True)) == 1
+
         total = ai_evaluate.write_csv(conn, path=__import__("pathlib").Path("data/test_scored.csv"))
         assert total == 1
 

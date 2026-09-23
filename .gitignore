@@ -11,3 +11,34 @@ web/tsconfig.tsbuildinfo
 data/test_*
 data/
 profile.yaml
+
+# --- CV data: personal by default, and deliberately not committable ---------
+# cv/master.yaml is the fact base: a real name, email address, phone number,
+# employment history and the full achievement bank. It is ignored at the
+# DIRECTORY level rather than by file, so a new file added beside it (another
+# summary variant, an exported CV, a notes file) cannot slip into a commit by
+# being unlisted. Ed's instruction, 2026-09-23: "ignore all the cv folders in
+# git. I don't plan on pushing it just yet but we can check when I come to do
+# that."
+#
+# The vendored engine's CODE and DOCUMENTATION are deliberately NOT ignored —
+# scripts/ and templates/ are machine, not facts, and belong in the repo. The
+# split is facts-vs-machine, and it is drawn here rather than in per-directory
+# .gitignore files so anyone auditing what could ever be pushed sees it in one
+# place.
+#
+# context/ is the exception, added 2026-09-23 when the fork went public:
+# context/01-data-model.md carries the same fact base as cv/master.yaml — a
+# real name, email address, phone number and location — so reading it as
+# "machine documentation" was wrong. It is ignored at the DIRECTORY level for
+# the same reason cv/ is: a new note dropped beside these docs must not reach a
+# public commit by being unlisted.
+cv/
+cv_output/
+context/
+#
+# contract.yaml joins them for the same reason, from the other direction: it is
+# live config the pipeline reads, but the one personal number in it is the
+# target salary. contract.yaml.example is committed in its place, and is what
+# app/contract_rates.py falls back to, so a fresh clone still runs.
+contract.yaml

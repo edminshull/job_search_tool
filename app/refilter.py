@@ -20,6 +20,7 @@ Usage (run from the repo root):
 """
 import sys
 
+from app import contract_rates
 from app import dedup
 from app import filters
 
@@ -31,11 +32,19 @@ def main(dry_run: bool = False) -> None:
 
         rescued = []
         for job in filtered_out:
+            # Re-derive the contract verdict AND the screening signals from
+            # the STORED text before re-filtering, so a change to
+            # contract.yaml's day-rate thresholds, filters.yaml's language
+            # tiers, or the clearance rules is honoured here — not just a
+            # change to the title/location lists. Nothing is re-fetched.
+            contract_rates.apply_to_job(job)
+            job.update(filters.screening_signals(job))
             if filters.passes_filters(job):
                 rescued.append(job)
                 print(f"RESCUED  | {job['company']:20s} | {job['title'][:55]:55s} | {job['url']}")
                 if not dry_run:
                     dedup.set_passed_filters(conn, job["url"], True)
+                    dedup.save_derived_fields(conn, job)
 
         print(f"\n{len(rescued)}/{len(filtered_out)} now pass the current filters.")
 
@@ -44,11 +53,14 @@ def main(dry_run: bool = False) -> None:
 
         demoted = []
         for job in passed:
+            contract_rates.apply_to_job(job)
+            job.update(filters.screening_signals(job))
             if not filters.passes_filters(job):
                 demoted.append(job)
                 print(f"DEMOTED  | {job['company']:20s} | {job['title'][:55]:55s} | {job['url']}")
                 if not dry_run:
                     dedup.set_passed_filters(conn, job["url"], False)
+                    dedup.save_derived_fields(conn, job)
 
         print(f"\n{len(demoted)}/{len(passed)} no longer pass the current filters.")
 

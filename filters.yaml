@@ -1,143 +1,316 @@
 # Deterministic pre-filter rules, read by app/filters.py. Edit these lists
 # directly as you refine what "in scope" means for you — no code changes
-# needed. See app/filters.py's module docstring for how they're applied.
+# needed. See app/filters.py's module docstring for how they are applied.
+#
+# RETUNED FOR ED, 2026-09: London/UK, senior SDET / test automation.
+#
+# Two mechanical details from app/filters.py that drive the shape of these
+# lists (they are easy to get wrong by assuming otherwise):
+#
+#   1. `priority_title_keywords` is checked FIRST and returns True
+#      immediately, skipping the exclusion list entirely. Anything put there
+#      can never be vetoed, so it must be unambiguous on its own.
+#      Every other keyword list is a plain case-insensitive SUBSTRING match
+#      (re.escape'd, no word boundaries), except the regex lists below.
+#   2. `location_allow_patterns`, `stack_dealbreakers` and `stack_core` ARE
+#      real regexes, so `\b` works there. The three title lists are not.
 
-# Unambiguous engineering-role title signals. If the title matches one of
-# these, it's kept regardless of exclusion_keywords below — e.g. "Software
-# Engineer, Automated Marketing" shouldn't get dropped just because
-# "marketing" is also in exclusion_keywords. Keep this list short and
-# genuinely unambiguous (don't add anything from title_allow_keywords
-# that's also ambiguous, like bare "engineer" or "platform").
+# Titles checked before anything else, bypassing exclusion_keywords
+# entirely. This is what lets "QA Engineer, Compliance" survive the
+# `compliance` style vetoes that a generic allowlist would suffer, so keep
+# only phrases that are unambiguously test/QA roles.
 priority_title_keywords:
-  - "software engineer"
-  - "software developer"
-  - "developer"
-  - "full stack"
-  - "fullstack"
-  - "full-stack"
+  - "sdet"
+  - "software development engineer in test"
+  - "software developer in test"
+  - "test automation"
+  - "qa automation"
+  - "quality assurance engineer"
+  - "quality assurance analyst"
 
 # Title must match at least one of these to be considered at all.
+# Deliberately QA/testing-specific. The shipped list (backend, platform,
+# devops, full stack, architect, "software engineer") was removed on purpose:
+# Ed is applying for senior IC SDET/test-automation roles, and leaving the
+# generic engineering titles in generates AI-scored noise on roles he would
+# never take. Re-add any of them if that changes.
+#
+# Note the -ing forms. "Automation Testing Engineer" does NOT contain the
+# substring "test engineer", and it is one of Ed's own 16 real postings.
 title_allow_keywords:
-  - "engineer"        # covers Engineer / Engineering Manager / Software Engineering
-  - "engineering"
-  - "developer"
-  - "development"
-  - "programmer"
-  - "architect"
-  - "sre"
-  - "site reliability"
-  - "devops"
-  - "full stack"
-  - "fullstack"
-  - "full-stack"
-  - "backend"
-  - "back-end"
-  - "back end"
-  - "platform"
-  - "tech lead"
-  - "technical lead"
+  - "test engineer"
+  - "testing engineer"
+  - "test analyst"
+  - "test consultant"
+  - "testing consultant"
+  - "test lead"
+  - "test specialist"
+  - "test infrastructure"
+  - "qa engineer"
+  - "qa analyst"
+  - "qa test"
+  - "qa specialist"
+  - "qa consultant"
+  - "quality engineer"
+  - "quality engineering"
+  - "quality assurance"
+  - "tester"
+  - "automation engineer"
+  - "automation analyst"
+  - "automation consultant"
+  - "engineer in test"
+  - "developer in test"
+  # Deliberately absent, because profile.yaml's constraints say senior IC and
+  # "not a people-management track": "qa lead", "test manager", "head of test",
+  # "quality manager". UK "QA Lead" roles are often hands-on lead automation
+  # rather than management, so if you want them scored instead of dropped, add
+  # "qa lead" here — no other change is needed.
 
-# Even if the title matched the allowlist above, drop it if it also
-# matches one of these — engineering-adjacent titles that aren't a fit.
+# Even if the title matched the allowlist above, drop it if it also matches
+# one of these. The shipped generic exclusions (accountant, nurse, recruiter,
+# sales development, marketing, customer success...) were removed: they can no
+# longer fire, because the allowlist above is now QA/testing-specific and
+# nothing like "Marketing Analyst" can reach them. What remains is the set
+# that DOES reach a test-shaped title and is a genuine mismatch.
+#
+# The trade-off worth knowing: "compliance" was in the shipped list. It is
+# gone deliberately, because Ed's whole domain is financial-crime compliance
+# and a title like "Test Engineer — Compliance" is exactly what he wants.
+# The priority keywords above would have rescued it anyway; this makes it
+# unconditional.
 exclusion_keywords:
-  - "accountant"
-  - "accounting"
-  - "nurse"
-  - "nursing"
-  - "lawyer"
-  - "attorney"
-  - "paralegal"
-  - "chemist"
-  - "chemistry"
-  - "electrician"
-  - "plumber"
-  - "welder"
-  - "sales representative"
-  - "account executive"
+  # Hardware/firmware/electronics test roles: a large source of false
+  # positives for "test engineer" in the UK and a field Ed has never worked in.
+  - "hardware"
+  - "firmware"
+  - "embedded"
+  - "electronics"
+  - "silicon"
+  - "pcb"
+  - "asic"
+  - "fpga"
+  # Non-software "quality engineer" (UK manufacturing/aerospace/automotive)
+  - "manufacturing"
+  - "fabrication"
+  - "welding"
+  - "cnc"
+  - "hvac"
+  - "building services"
+  - "building automation"
+  - "construction"
+  - "calibration"
+  - "scada"
+  - "iso 9001"
+  - "automotive"
+  - "aerospace"
+  - "pharmaceutical"
+  - "medical device"
+  - "clinical"
+  # Game/audio/localisation QA: testing, but not Ed's field
+  - "games tester"
+  - "game tester"
+  - "playtest"
+  - "localisation"
+  - "localization"
+  - "linguistic"
+  # Security testing: Ed has security-adjacent work (KMS, RBAC, CVE
+  # remediation) but is not a penetration tester
+  - "penetration"
+  # Role shapes that are not engineering
   - "sales engineer"
-  - "sales development"
-  - "business development representative"
   - "recruiter"
   - "talent acquisition"
-  - "talent brand"
-  - "warehouse"
-  - "forklift"
-  - "driver"
-  - "cdl"
-  - "teacher"
-  - "professor"
-  - "dentist"
-  - "physician"
-  - "pharmacist"
-  - "mechanical engineer"
-  - "electrical engineer"
-  - "civil engineer"
-  - "chemical engineer"
-  - "industrial engineer"
-  - "manufacturing engineer"
-  - "hardware engineer"
-  - "process engineer"
-  - "field engineer"
-  - "customer success"
-  - "account manager"
-  - "marketing"
-  - "copywriting"
-  - "compliance"
-  - "product marketing"
+  - "field service"
 
-# EDIT ME FIRST: locations to keep, as regex patterns (case-insensitive)
-# matched against the free-text location string each ATS/aggregator
-# returns. Ships below as Canada/Alberta-only (the original author's
-# search) — replace with your own country/region/cities, or every job
-# will get rejected regardless of how good a fit it is. Deliberately does
-# NOT allow a bare "Remote" with no country qualifier — some postings say
-# "Remote Poland"/"Remote Spain"/"Remote Australia" etc, so an allowlist
-# needs an explicit country/region signal instead.
+# Locations to keep, as regex patterns (case-insensitive) matched against the
+# free-text location string each ATS/aggregator returns.
+#
+# CAVEAT, read before trusting this: location_is_allowed() returns False for
+# an EMPTY location string. Five of Ed's sixteen real postings state no
+# location at all ("Not stated", or blank), and every one of those is dropped
+# here regardless of how good it is. Fixing that needs a code change in
+# filters.py, not a config edit.
 location_allow_patterns:
-  - '\bcanada\b'
-  - '\balberta\b'
-  - ',\s*ab\b'       # "Calgary, AB" / "Edmonton, AB"
-  - '\bedmonton\b'
-  - '\bcalgary\b'
-  - '\bontario\b'
-  - '\bvancouver\b'
+  # London — the primary target (on-site and hybrid)
+  - '\blondon\b'
+  - '\bgreater london\b'
+  # UK-wide. These two lines are what admit non-London UK on-site roles
+  # (e.g. "Manchester, United Kingdom"). Delete them if you want London plus
+  # remote only; the remote patterns below are independent and keep working.
+  - '\bunited kingdom\b'
+  - '\buk\b'
+  # Remote, but only with an explicit UK signal — a bare "Remote" is
+  # deliberately NOT allowed, because it is just as likely to mean
+  # "Remote (US)" or "Remote Poland". Both orderings are covered.
+  - '\bremote\b[^,;|]{0,25}\b(uk|u\.k\.|united kingdom|gb|great britain|england|scotland|wales|northern ireland)\b'
+  - '\b(uk|u\.k\.|united kingdom|gb|great britain|england|scotland|wales|northern ireland)\b[^,;|]{0,25}\bremote\b'
+  # Uncomment if you want to accept "Work from anywhere" listings. One of the
+  # sixteen postings you already worked was exactly this, so it is a real
+  # category — but an unqualified global-remote role may not actually employ
+  # in the UK, which is why it is off by default.
+  # - 'work from anywhere'
 
-# EDIT ME FIRST (along with stack_core below): JD stack dealbreakers — if
-# the description clearly requires one of these languages/frameworks and
-# does NOT also mention anything from stack_core, treat it as a mismatch.
-# Ships assuming a Python/JS candidate who wants to exclude
-# Java/C#/.NET/etc — if your own stack includes one of these "dealbreaker"
-# languages, move it down into stack_core instead, or this will reject
-# roles in your own stack. Only runs when a description is
-# available. Word-boundary matched to avoid e.g. "java" matching
-# "javascript". Deliberately NOT including bare "go" — too ambiguous
-# ("go-to-market", "go live", etc.); "golang" below covers it, and most Go
-# postings also say "Golang" or "Go (Golang)" somewhere in the JD.
+# ---------------------------------------------------------------------------
+# LANGUAGE FIT
+#
+# Three named tiers, matched against the JD (see app/filters.py's
+# language_fit). The names matter: they are what the board and the AI prompt
+# show as the reason ("java, junit, maven"), so a match can be explained
+# rather than just asserted.
+#
+# Named mappings rather than plain lists, unlike the title keywords above,
+# because "this JD is a Java shop" is only useful if you can also say WHY.
+# ---------------------------------------------------------------------------
+
+# Java and Ruby are THE priority: Ed's deepest experience and what he wants
+# to keep working in. A posting naming any of these is ranked top and can
+# never be rejected for language.
+stack_priority:
+  "java": '\bjava\b'            # \b keeps this off "JavaScript", listed separately below
+  "ruby": '\bruby\b'
+  "rails": '\brails\b'
+  "rspec": '\brspec\b'
+  "capybara": '\bcapybara\b'
+  "groovy": '\bgroovy\b'
+  "spock": '\bspock\b'
+  "maven": '\bmaven\b'
+  "junit": '\bjunit\b'
+  # Kept after measuring: across 336 stored postings, '\bspring\b' matched
+  # WITHOUT '\bjava\b' exactly zero times, so the "spring the season" worry
+  # is theoretical here rather than real.
+  "spring": '\bspring\b'
+
+# Ed can work in these, but they are not what he is looking for. Naming one
+# is enough to avoid a language rejection, but not enough to be a priority.
+stack_secondary:
+  "javascript": '\bjavascript\b'   # NOT TypeScript, which is a known gap
+  "node": '\bnode(?:\.?js)?\b'
+
+# A dealbreaker is only acted on when NONE of the above is named anywhere in
+# the posting — a Java role that also mentions Python is a Java role.
 stack_dealbreakers:
-  - '\bjava\b'
-  - '\bc#\b'
-  - '\.net\b'
-  - '\bgolang\b'
-  - '\bruby\b'
-  - '\brails\b'
-  - '\bphp\b'
-  - '\bkotlin\b'
-  - '\bswift\b'
-  - '\bscala\b'
-  - '\bc\+\+\b'
+  # NOT '\bc#\b' and NOT '\bc\+\+\b'. Both of those shipped patterns are dead:
+  # '#' and '+' are non-word characters, so a trailing \b can only match when a
+  # WORD character follows, and "C# and .NET" / "C++ developer" never do. They
+  # matched nothing, ever. `(?!\w)` is the correct way to end a keyword that
+  # ends in a symbol.
+  "c#": '\bc#(?![a-z0-9])'
+  "c++": '\bc\+\+(?![a-z0-9])'
+  # Left as-is on purpose: it catches ".NET", "C#/.NET" and "ASP.NET Core",
+  # which a lookbehind-based fix would lose. It can also fire on a URL like
+  # "jobs.example.net" in a JD, but that only matters when no priority or
+  # secondary language is named anywhere in the posting, in which case the
+  # role is ambiguous anyway.
+  ".net": '\.net\b'
+  "golang": '\bgolang\b'
+  "php": '\bphp\b'
+  "kotlin": '\bkotlin\b'
+  "swift": '\bswift\b'
+  "scala": '\bscala\b'
+  # Added on request: "heavy on Python or Playwright, which I don't have much
+  # of". Python is a language-level mismatch, in the same class as C#/.NET.
+  # pytest and Playwright are tools, and tools were deliberately kept OUT of
+  # this list before (see the history below) — but these two are different
+  # from Kubernetes or Docker: they are not named in every JD, and when a
+  # posting's ENTIRE automation stack is Playwright with no language named,
+  # it is a Node/TypeScript or Python shop rather than a Java/Ruby one.
+  #
+  # Measured against the live board before adding: this rejects 10 of 92
+  # postings, every one of them a genuine mismatch (Python/Playwright-only
+  # shops, plus a Dynamics 365 low-code role that names no language at all).
+  # The escape hatch below is what keeps a "Java and Playwright" role safe.
+  "python": '\bpython\b'
+  "pytest": '\bpytest\b'
+  "playwright": '\bplaywright\b'
 
-# Your own core stack — if the JD mentions any of these, a stack dealbreaker
-# match above is ignored (the role likely uses both, or the dealbreaker
-# keyword is a false positive).
-stack_core:
-  - '\bpython\b'
-  - '\bfastapi\b'
-  - '\bdjango\b'
-  - '\bflask\b'
-  - '\bjavascript\b'
-  - '\btypescript\b'
-  - '\breact\b'
-  - '\bnode(?:\.?js)?\b'
+# HISTORICAL NOTE, still the reason the list above is short. The first draft
+# also carried Kubernetes, Docker, Jenkins, Kafka, Datadog, JSON, Selenium,
+# Cucumber, Gherkin, k6, Pact, RestAssured and Testcontainers from the
+# skill groups. Testing proved that wrong: Kubernetes and Docker are named in
+# essentially every JD, so they cancelled EVERY dealbreaker, and a "Golang
+# test automation with Kubernetes and Docker" role sailed through as a match.
+# A tool that appears everywhere proves nothing about language fit.
+
+# Language tiers, best first, with the rank used for sorting. Only the tier
+# names and ranks are used by the board; the patterns are what decide them.
+language_tiers:
+  priority: 3     # a stack_priority language is named
+  secondary: 2    # only a stack_secondary language is named
+  none: 1         # no language named at all — NOT a mismatch, see below
+  mismatch: 0     # a dealbreaker is named and nothing else is
+
+# ---------------------------------------------------------------------------
+# SECURITY CLEARANCE
+#
+# Ed does not hold clearance (profile.yaml: "status is unknown and
+# unclaimed"), so a posting that requires him to ALREADY hold it is out of
+# reach and is dropped. The patterns below are deliberately narrow, and the
+# distinction they encode was read off real adverts rather than invented:
+#
+#   BLOCKED  "Active SC clearance required"          (Experis)
+#            "SC Cleared Lead Automation Engineer"   (VIQU — in the TITLE)
+#            "candidates must hold current SC Clearance"  (UBDS)
+#            "who have held Security Clereance in the past" (Solirius)
+#            "eSC or eDV Clearance Required"         (IBM)
+#   OBTAINABLE, so NOT dropped:
+#            "must be eligible for Security Clearance (SC)"   (Capgemini)
+#            "You must be eligible to obtain UK SC Clearance" (RedTech)
+#            "Clearance: BPSS to start, with eligibility for Home Office SC"
+#            "Clearance: SC-cleared / Non-SC"        (Genesis)
+#            "Existing SC Clearance would be a benefit" (RedTech)
+#
+# The last two are why there are downgrade patterns as well as blocked ones:
+# "eligible", "obtain", "willing to undergo", "BPSS" (baseline screening
+# anyone can pass), a "non-SC" alternative, or clearance being merely
+# "desirable" all mean the role is NOT automatically out of reach — it is
+# flagged instead, for you to judge.
+#
+# BPSS in particular is NOT a blocker: it is pre-employment screening, not
+# clearance, and it is routinely put in place for the successful candidate.
+clearance:
+  # A posting is dropped when one of these matches and no downgrade pattern
+  # appears in the same sentence.
+  blocked_patterns:
+    active_clearance: '\b(?:active|current|existing|valid|live)\s+(?:sc|dv|esc|edv|ctc|nppv\d?)\b'
+    cleared_suffix: '\b(?:sc|dv|esc|edv|ctc|nppv\d?)\b[\s\-]*cleared\b'
+    clearance_required: '\b(?:sc|dv|esc|edv|ctc|nppv\d?)\s+clear\w*nce\b[^.;]{0,30}?\b(?:required|essential|mandatory|needed)\b'
+    must_hold: '\bmust\s+(?:already\s+)?(?:hold|have|possess)\b[^.;]{0,50}?\b(?:sc|dv|esc|edv|ctc|nppv\d?)\b'
+    hold_clearance: '\bhold\s+(?:an?\s+)?(?:active\s+|current\s+|existing\s+|valid\s+)?(?:sc|dv|esc|edv|ctc)\b'
+    held_clearance: '\b(?:have\s+)?held\s+(?:security\s+)?(?:sc\s+|dv\s+)?clear\w*nce\b'
+    clearance_label: '\bsecurity\s+clear\w*nce\s*[:\-]\s*(?:active|required|essential|mandatory|sc|dv|esc|edv)\b'
+
+  # Clearance has to be MENTIONED before any of the tiers below apply at all.
+  # Without this gate the "possible" tier fires on ordinary JD boilerplate —
+  # measured on the live corpus, `ability to` and `bonus` alone were flagging
+  # 85 postings, including "Freelance Copywriter" and "Remote Office
+  # Assistant", as clearance-related. A posting that never says the word is
+  # "none", whatever else it contains.
+  mention_patterns:
+    token: '\b(?:sc|dv|esc|edv|ctc|nppv\d?)\b'
+    bpss: '\bbpss\b'
+    security: '\bsecurity\s+(?:clear\w*nce|check|vetting)\b'
+    clearance: '\bclear\w*nce\b'
+
+  # Any of these in the same sentence as a blocked match downgrades the
+  # posting from "blocked" to "possible" — shown and flagged, not dropped.
+  # `clear\w*nce` rather than `clearance` throughout, because a real advert
+  # in the corpus spells it "Security Clereance".
+  downgrade_patterns:
+    eligible: '\beligib\w*'
+    obtain: '\bobtain(?:ing|able|ed)?\b'
+    willing: '\bwilling\s+to\s+(?:undergo|be|obtain)\b'
+    # Narrowed to clearance-shaped outcomes on purpose. A bare "ability to"
+    # is in nearly every JD ever written ("ability to work independently")
+    # and flags half the board if it counts.
+    ability: '\bability\s+to\s+(?:obtain|gain|hold|be\s+cleared|undergo)\b'
+    bpss: '\bbpss\b'
+    non_sc: '\bnon[\s\-]?sc\b'
+    not_mandated: '\bnot\s+(?:mandated|required|essential)\b'
+    nice_to_have: '\bwould\s+be\s+(?:a\s+)?(?:benefit|advantage|plus|bonus|nice)\b|\bnice\s+to\s+have\b|\bdesirable\b|\badvantageous\b|\bnot\s+essential\b'
+
+  # Drop the posting outright when clearance is required and not obtainable.
+  # Set false to keep them and flag them instead.
+  reject_blocked: true
 
 # Below this many characters, a JD is treated as a short aggregator teaser
 # snippet rather than a full posting (see app/filters.py's looks_truncated).

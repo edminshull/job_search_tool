@@ -1,0 +1,148 @@
+# =============================================================================
+# TEST FIXTURE — fictional data, used only by scripts/selftest.py.
+#
+# Deliberately NOT the real CV. Tests must not depend on real personal data,
+# which changes independently of the code. Keep this small, stable and fake.
+# =============================================================================
+
+meta:
+  placeholder: true
+  version: 1
+  updated: "2025-01-01"
+  notes: "Fictional fixture for selftest.py."
+
+contact:
+  name: Test Person
+  headline: Senior Widget Engineer | Data Platform
+  email: test@example.com
+  phone: "+44 7000 000000"
+  location: Testville, UK
+  links:
+    - label: LinkedIn
+      url: linkedin.com/in/test-person
+
+summaries:
+  default: >
+    Data engineer with eight years building and operating production pipelines
+    across warehousing and orchestration layers.
+  technical_ic: >
+    Data engineer with eight years building and operating production pipelines,
+    most recently owning the orchestration and warehousing layer for a
+    multi-territory retail business.
+
+skill_groups:
+  - group: Languages
+    items: [Python, SQL, Bash]
+  - group: Data Platform
+    items: [Snowflake, dbt, Apache Airflow, PostgreSQL, Apache Spark]
+  # RestAssured is here to exercise a specific bug: postings write it with a
+  # space ("Rest Assured"), and the extractor used to tokenise that into two
+  # non-lexicon tokens, losing the compound term entirely.
+  - group: Test Tooling
+    items: [RestAssured, WireMock]
+  - group: Cloud & Infrastructure
+    items: [AWS, Terraform, Docker, Kubernetes]
+  - group: Modelling & Quality
+    items: [Dimensional modelling, Data warehousing, Data quality, Data contracts]
+  - group: Practice
+    items: [Dimensional modelling, Mentoring, Stakeholder management, Agile delivery]
+
+experience:
+  - id: example-current
+    company: Example Corp
+    title: Senior Widget Engineer
+    location: Testville, UK
+    start: 2022-04
+    end: present
+    context: >
+      Fixture role. Multi-territory retail platform team of nine.
+    achievements:
+      - id: ex-1
+        text: >
+          Cut widget build times 62% (18 min to 7 min) by replacing a monolithic
+          pipeline with incremental caching, unblocking daily releases for a
+          team of nine.
+        tags: [python, ci/cd, performance, automation, developer experience]
+        metrics: ["62% faster builds", "18min to 7min", "team of 9"]
+        impact: high
+      - id: ex-2
+        text: >
+          Led migration of 40+ services to containerised deployment, reducing
+          mean incident recovery time from 45 to 12 minutes.
+        tags: [docker, kubernetes, aws, terraform, reliability, incident response]
+        metrics: ["45min to 12min MTTR", "40+ services"]
+        impact: high
+      - id: ex-3
+        text: >
+          Mentored four junior engineers, two of whom were promoted within
+          eighteen months.
+        tags: [mentoring, coaching, line management, hiring]
+        metrics: ["4 mentees", "2 promotions"]
+        impact: medium
+      - id: ex-4
+        text: >
+          Established the team's first written architecture decision record
+          process, now used across three adjacent teams.
+        tags: [documentation, technical writing, process improvement, architecture]
+        metrics: []
+        impact: low
+
+  - id: example-previous
+    company: Prior Analytics Ltd
+    title: Data Analyst
+    location: Testville, UK
+    start: 2019-01
+    end: 2022-03
+    context: >
+      Fixture role. Series A analytics consultancy, 60 staff.
+    achievements:
+      - id: pa-1
+        text: >
+          Built the customer churn model that informed retention spend, lifting
+          retained revenue 11% year on year across a £4m book.
+        tags: [python, machine learning, predictive modeling, sql, churn reduction, retail]
+        metrics: ["11% YoY", "£4m book"]
+        impact: high
+      - id: pa-2
+        text: >
+          Replaced manual monthly reporting with automated dashboards, saving
+          roughly 30 analyst hours per month.
+        tags: [tableau, sql, automation, dashboards, reporting, business intelligence]
+        metrics: ["30 hrs/month saved"]
+        impact: medium
+      - id: pa-3
+        text: >
+          Presented findings to client boards and translated model output into
+          commercial recommendations for non-technical stakeholders.
+        tags: [stakeholder management, communication, presentations, data storytelling]
+        metrics: []
+        impact: medium
+
+  - id: example-first
+    company: First Role GmbH
+    title: Junior Developer
+    location: Testville, DE
+    start: 2017-09
+    end: 2018-12
+    context: ""
+    achievements:
+      - id: fr-1
+        text: >
+          Shipped the internal tooling that replaced a spreadsheet-based workflow
+          for 200 warehouse staff.
+        tags: [javascript, react, node.js, internal tools, automation]
+        metrics: ["200 users"]
+        impact: medium
+
+education:
+  - institution: Example University
+    qualification: BSc (Hons) Computer Science, 2:1
+    start: 2013
+    end: 2016
+
+certifications:
+  - name: AWS Certified Solutions Architect - Associate
+    issuer: Amazon Web Services
+    dates: "2023"
+
+projects: []

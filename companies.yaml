@@ -23,23 +23,9 @@ companies:
   - name: Coveo
     ats: greenhouse
     slug: coveoen   # corrected 2026-08-10: "coveodeven" was a dev/test board with 1 fake job; "coveoen" is production (55 real postings confirmed)
-  - name: Procurify
-    ats: ashby
-    slug: procurify
   - name: Vanta
     ats: ashby
     slug: vanta
-  - name: Treewalk
-    ats: workable
-    slug: treewalk   # confirmed via apply.workable.com/api/v1/widget/accounts/treewalk — currently 0 open jobs
-  - name: Seequent
-    ats: workable
-    slug: seequent
-
-  # Added from Edmonton/Calgary AB job listing scan (2026-08-10)
-  - name: AltaML
-    ats: lever
-    slug: altaml
   - name: LawDepot
     ats: ashby
     slug: lawdepot
@@ -52,23 +38,14 @@ companies:
   - name: StackAdapt
     ats: greenhouse
     slug: stackadapt
-  - name: Hootsuite
-    ats: greenhouse
-    slug: hootsuite
   - name: Speechify
     ats: greenhouse
     slug: speechify
 
   # Auto-discovered via Adzuna aggregator + full-JD fetch
-  - name: Achievers
-    ats: lever
-    slug: achievers
   - name: Air-tek
     ats: lever
     slug: air-tek
-  - name: AlayaCare
-    ats: greenhouse
-    slug: alayacare
   - name: Alpaca
     ats: greenhouse
     slug: alpaca
@@ -86,9 +63,6 @@ companies:
   - name: Wattpad
     ats: lever
     slug: wattpad
-  - name: Ritual
-    ats: lever
-    slug: ritual
   - name: League
     ats: greenhouse
     slug: leagueinc
@@ -101,12 +75,6 @@ companies:
   - name: Borrowell
     ats: workable
     slug: borrowell
-  - name: Achievers
-    ats: lever
-    slug: achievers
-  - name: BenchSci
-    ats: lever
-    slug: benchsci
   - name: Cohere
     ats: ashby
     slug: cohere
@@ -119,12 +87,6 @@ companies:
   - name: Deep Genomics
     ats: lever
     slug: deepgenomics
-  - name: Konrad Group
-    ats: smartrecruiters
-    slug: KonradGroup
-  - name: Sortable
-    ats: ashby
-    slug: sortable
   - name: PointClickCare
     ats: lever
     slug: pointclickcare
@@ -137,30 +99,18 @@ companies:
   - name: Tilt
     ats: ashby
     slug: tilt
-  - name: Hootsuite
-    ats: greenhouse
-    slug: hootsuite
   - name: Later
     ats: greenhouse
     slug: later
-  - name: Certn
-    ats: workable
-    slug: certn
   - name: Visier
     ats: greenhouse
     slug: visiersolutionsinc
-  - name: Trulioo
-    ats: greenhouse
-    slug: trulioo
   - name: Blackbird Interactive
     ats: lever
     slug: blackbirdinteractive
   - name: Unbounce
     ats: greenhouse
     slug: unbounce
-  - name: Procurify
-    ats: ashby
-    slug: procurify
   - name: Klue
     ats: ashby
     slug: klue
@@ -194,24 +144,9 @@ companies:
   - name: Quadbridge
     ats: greenhouse
     slug: quadbridge
-  - name: AlayaCare
-    ats: greenhouse
-    slug: alayacare
-  - name: Coveo
-    ats: greenhouse
-    slug: coveodeven
   - name: Hopper
     ats: ashby
     slug: hopper
-  - name: SSENSE
-    ats: smartrecruiters
-    slug: ssense1
-  - name: Behaviour Interactive
-    ats: smartrecruiters
-    slug: BehaviourInteractive
-  - name: Vention
-    ats: smartrecruiters
-    slug: Vention
   - name: Behavox
     ats: greenhouse
     slug: behavox
@@ -227,12 +162,6 @@ companies:
   - name: Magnet Forensics
     ats: lever
     slug: magnetforensics
-  - name: Attabotics
-    ats: lever
-    slug: attabotics
-  - name: AltaML
-    ats: lever
-    slug: altaml
   - name: D2L
     ats: greenhouse
     slug: d2l
@@ -254,30 +183,15 @@ companies:
   - name: Benevity
     ats: ashby
     slug: benevity
-  - name: Klipfolio
-    ats: workable
-    slug: klipfolio
   - name: Assent
     ats: smartrecruiters
     slug: Assent
-  - name: Coconut Software
-    ats: greenhouse
-    slug: coconutsoftware
   - name: Top Hat
     ats: ashby
     slug: top-hat
-  - name: SkipTheDishes
-    ats: smartrecruiters
-    slug: SkipTheDishes
   - name: Wave
     ats: lever
     slug: waveapps
-  - name: TouchBistro
-    ats: greenhouse
-    slug: touchbistro
-  - name: Float
-    ats: workable
-    slug: floatjobs
   - name: Waabi
     ats: lever
     slug: waabi
@@ -311,15 +225,9 @@ companies:
   - name: Cloud DX
     ats: smartrecruiters
     slug: CloudDXInc
-  - name: Explorance
-    ats: bamboohr
-    slug: explorance
   - name: Skillsoft
     ats: greenhouse
     slug: skillsoft
-  - name: Prodigy Education
-    ats: ashby
-    slug: prodigy-education
   - name: Digital Extremes
     ats: greenhouse
     slug: digitalextremes
@@ -353,11 +261,6 @@ companies:
   - name: Rewind
     ats: ashby
     slug: rewind
-  - name: ClearRisk
-    ats: bamboohr
-    slug: clearrisk
-
-  # Auto-discovered via Adzuna aggregator + full-JD fetch
   - name: "Aktion Associates"
     ats: workable
     slug: aktion-associates
@@ -409,9 +312,6 @@ companies:
   - name: "Coalition"
     ats: greenhouse
     slug: coalition
-  - name: "Cority"
-    ats: lever
-    slug: cority
   - name: "Deep Sky"
     ats: lever
     slug: deepsky
@@ -424,12 +324,6 @@ companies:
   - name: "Docker"
     ats: ashby
     slug: docker
-  - name: "Doppel"
-    ats: greenhouse
-    slug: doppel
-  - name: "Doppel"
-    ats: ashby
-    slug: doppel
   - name: "Elation Health"
     ats: greenhouse
     slug: elationhealth
@@ -490,12 +384,6 @@ companies:
   - name: "Marble Technology"
     ats: ashby
     slug: marble
-  - name: "Maxima"
-    ats: ashby
-    slug: maxima
-  - name: "Maxima"
-    ats: smartrecruiters
-    slug: maxima
   - name: "Meow"
     ats: ashby
     slug: meow
@@ -520,12 +408,6 @@ companies:
   - name: "OpenLoop Health"
     ats: ashby
     slug: openloophealth
-  - name: "Outschool"
-    ats: greenhouse
-    slug: outschool
-  - name: "Outschool"
-    ats: ashby
-    slug: outschool
   - name: "PSL"
     ats: greenhouse
     slug: psl
@@ -538,9 +420,6 @@ companies:
   - name: "Pinterest"
     ats: greenhouse
     slug: pinterest
-  - name: "PolicyMe"
-    ats: lever
-    slug: policyme
   - name: "Promise Robotics"
     ats: lever
     slug: promiserobotics
@@ -549,9 +428,6 @@ companies:
     slug: ravenwakegames
   - name: "Relay"
     ats: ashby
-    slug: relay
-  - name: "Relay"
-    ats: lever
     slug: relay
   - name: "Resmed"
     ats: smartrecruiters
@@ -568,9 +444,6 @@ companies:
   - name: "Samsara"
     ats: greenhouse
     slug: samsara
-  - name: "Shakepay"
-    ats: greenhouse
-    slug: shakepay
   - name: "ShyftLabs"
     ats: lever
     slug: shyftlabs
@@ -628,3 +501,260 @@ companies:
   - name: Agiloft
     ats: lever
     slug: agiloft
+  # Auto-discovered via UK list built 2026-09 via app/scripts/build_uk_companies.py (ATS slug probed + identity-verified against the board name or posting text)
+  - name: "Version 1"
+    ats: smartrecruiters
+    slug: version1
+  - name: "Gymshark"
+    ats: greenhouse
+    slug: gymshark
+  - name: "Graphcore"
+    ats: greenhouse
+    slug: graphcore
+  - name: "Wayve"
+    ats: greenhouse
+    slug: wayve
+  - name: "ElevenLabs"
+    ats: ashby
+    slug: elevenlabs
+  - name: "Wise"
+    ats: smartrecruiters
+    slug: wise
+  - name: "Deliveroo"
+    ats: greenhouse
+    slug: deliveroo
+  - name: "Faculty"
+    ats: ashby
+    slug: faculty
+  - name: "ASOS"
+    ats: smartrecruiters
+    slug: asos
+  - name: "Monzo"
+    ats: greenhouse
+    slug: monzo
+  - name: "Legal & General"
+    ats: smartrecruiters
+    slug: legalandgeneral
+  - name: "Zopa"
+    ats: lever
+    slug: zopa
+  - name: "Ebury"
+    ats: greenhouse
+    slug: ebury
+  - name: "Trainline"
+    ats: ashby
+    slug: trainline
+  - name: "Beamery"
+    ats: smartrecruiters
+    slug: beamery
+  - name: "Tide"
+    ats: greenhouse
+    slug: tide
+  - name: "Funding Circle"
+    ats: ashby
+    slug: fundingcircle
+  - name: "Zego"
+    ats: ashby
+    slug: zego
+  - name: "Multiverse"
+    ats: ashby
+    slug: multiverse
+  - name: "Paddle"
+    ats: ashby
+    slug: paddle
+  - name: "Isomorphic Labs"
+    ats: greenhouse
+    slug: isomorphiclabs
+  - name: "Trustpilot"
+    ats: greenhouse
+    slug: trustpilot
+  - name: "Capital on Tap"
+    ats: greenhouse
+    slug: capitalontap
+  - name: "Loveholidays"
+    ats: ashby
+    slug: loveholidays
+  - name: "Synthesia"
+    ats: ashby
+    slug: synthesia
+  - name: "Accurx"
+    ats: ashby
+    slug: accurx
+  - name: "Liberis"
+    ats: greenhouse
+    slug: liberis
+  - name: "Moonpig"
+    ats: lever
+    slug: moonpig
+  - name: "GoCardless"
+    ats: greenhouse
+    slug: gocardless
+  - name: "Marshmallow"
+    ats: ashby
+    slug: marshmallow
+  - name: "Quantexa"
+    ats: ashby
+    slug: quantexa
+  - name: "Farfetch"
+    ats: lever
+    slug: farfetch
+  - name: "Zilch"
+    ats: ashby
+    slug: zilch
+  - name: "ClearBank"
+    ats: ashby
+    slug: clearbank
+  - name: "PPRO"
+    ats: lever
+    slug: ppro
+  - name: "ComplyAdvantage"
+    ats: greenhouse
+    slug: complyadvantage
+  - name: "Freetrade"
+    ats: ashby
+    slug: freetrade
+  - name: "Immersive Labs"
+    ats: ashby
+    slug: immersivelabs
+  - name: "TP ICAP"
+    ats: smartrecruiters
+    slug: tpicap
+  - name: "Thoughtworks"
+    ats: greenhouse
+    slug: thoughtworks
+  - name: "Vitesse"
+    ats: ashby
+    slug: vitesse
+  - name: "OakNorth"
+    ats: ashby
+    slug: oaknorth
+  - name: "Form3"
+    ats: greenhouse
+    slug: form3
+  - name: "Codat"
+    ats: ashby
+    slug: codat
+  - name: "Juro"
+    ats: ashby
+    slug: juro
+  - name: "TrueLayer"
+    ats: greenhouse
+    slug: truelayer
+  - name: "Rothesay"
+    ats: greenhouse
+    slug: rothesaylife
+  - name: "OVO Energy"
+    ats: greenhouse
+    slug: ovoenergy
+  - name: "Tractable"
+    ats: ashby
+    slug: tractable
+  - name: "Signal AI"
+    ats: ashby
+    slug: signal-ai
+
+  # Added 2026-09-23 on request. Kainos is a Belfast-HQ'd UK digital services
+  # company (LSE-listed, ~3,000 staff) that runs Workday for its own careers
+  # site — and also SELLS Workday services, which is why so many of its postings
+  # are Workday-consultancy roles rather than engineering ones.
+  #
+  # TWO TRAPS, both checked live before this entry was written:
+  #
+  #   1. "kainos" EXISTS as a Workable account and as a SmartRecruiters company,
+  #      and both return HTTP 200 — with `"jobs": []`. Verified empty, so a
+  #      workable or smartrecruiters entry here would look healthy and silently
+  #      contribute nothing forever. Their real board is Workday.
+  #   2. Workday's list endpoint reports `locationsText: "5 Locations"` for
+  #      multi-site roles, including several UK test roles. That string fails the
+  #      location allowlist, so those postings would be dropped on arrival even
+  #      though one of the sites is London. ats_clients.fetch_workday expands the
+  #      detail for relevant titles to recover the real location — see its
+  #      docstring. Belfast/Birmingham-only roles are still correctly rejected.
+  #
+  # Slug is `tenant/site` (from kainos.wd3.myworkdayjobs.com/kainos). `search`
+  # is a server-side text filter applied to the whole posting, not a title match:
+  # it is how this entry asks for the concept rather than guessing titles, and it
+  # is what keeps a 125-posting consultancy board from becoming 125 detail
+  # fetches. Drop the `search` line to scan the entire board instead.
+  - name: "Kainos"
+    ats: workday
+    slug: kainos/kainos
+    search: "test"
+
+  # Added 2026-09-23 on request ("I can see a QA role on there now").
+  #
+  # TWO boards exist for Trading 212 and only one is live:
+  #   ashby     trading212  -> 67 postings, incl. Senior Quality Assurance
+  #                            Engineer in London (the role Ed saw)
+  #   personio  trading212  -> a stale feed whose only London entry is a
+  #                            "General Application" created 2018-10-22, with
+  #                            no QA or engineering roles at all
+  # So `ats: ashby` is the correct one. The Personio host still resolves and
+  # returns HTTP 200, which is exactly the trap: it would look configured and
+  # contribute nothing.
+  - name: "Trading 212"
+    ats: ashby
+    slug: trading212
+
+  # ---------------------------------------------------------------------------
+  # UK additions, 2026-09-23. Every slug below was PROBED LIVE before being
+  # written here, and each is recorded with what it actually had on the day —
+  # because this file's history shows the failure mode clearly: a board that
+  # returns HTTP 200 with an empty list looks perfectly configured and
+  # contributes nothing forever (see the Kainos and Trading 212 notes above, and
+  # the 19 entries removed on this date for exactly that).
+  #
+  # Group A — a live UK QA role at the time of writing
+  # Group B — UK-active boards with real London engineering roles but no QA
+  #           opening yet. Added because a QA role appearing later is then caught
+  #           automatically; they contribute nothing until one does.
+  # ---------------------------------------------------------------------------
+
+  # --- Group A: live UK QA role ----------------------------------------------
+  # Senior QA Engineer @ London (greenhouse, 26 jobs). A UK digital consultancy
+  # that hires test engineers directly — the same shape as Kainos and Version 1,
+  # which are the two highest-yield boards in this registry (7.1% and 8.0% of
+  # their postings pass the filters, against ~0.1% for the North American list).
+  - name: "Red Badger"
+    ats: greenhouse
+    slug: redbadger
+
+  # --- Group B: UK-active, London engineering roles, no QA opening yet -------
+  # Verified London postings at probe time (count in the note). Each is a real
+  # employer with a UK engineering function, not a board added on a hunch.
+  - name: "SumUp"            # 72 UK postings (366 total) — payments
+    ats: greenhouse
+    slug: sumup
+  - name: "Intercom"         # 30 UK postings — SaaS
+    ats: greenhouse
+    slug: intercom
+  - name: "Sona"             # 9 UK — workforce SaaS, remote-UK
+    ats: ashby
+    slug: sona
+  - name: "Griffin"          # 5 UK, all of its board — banking-as-a-service
+    ats: ashby
+    slug: griffin
+  - name: "Flagstone"        # 12 UK of 13 total — cash management
+    ats: ashby
+    slug: flagstone
+  - name: "Flock"            # 6 UK — insurtech
+    ats: ashby
+    slug: flock
+  - name: "Genomics"         # 6 UK — genomics/bio
+    ats: ashby
+    slug: genomics
+  - name: "Contentful"       # 11 UK — CMS
+    ats: greenhouse
+    slug: contentful
+  - name: "Gousto"           # 3 UK — recipe box
+    ats: smartrecruiters
+    slug: gousto
+  - name: "Too Good To Go"   # 5 UK — food waste marketplace
+    ats: ashby
+    slug: toogoodtogo
+  # NOTE (2026-09-23): Wayve is ALSO already registered above (greenhouse/wayve)
+  # and is deliberately not listed twice. It maintains a board on greenhouse AND
+  # one on ashby carrying the same postings; only greenhouse is registered, so the
+  # board is not fetched twice per run. This is the duplicate-entry bug this file
+  # was cleaned of on the same date — worth knowing because "it is on two ATSes"
+  # is a normal thing for a growing company, not an error.

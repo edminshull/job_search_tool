@@ -214,12 +214,220 @@ def fetch_smartrecruiters(company_display_name: str, slug: str) -> list[dict]:
     return jobs
 
 
+WORKDAY_DEFAULT_REGION = "wd3"   # the tenant is the subdomain: <tenant>.wd3.myworkdayjobs.com
+# Workday requires a human-ish UA on the CXS API; the default httpx UA gets 403
+# on some tenants. Verified against Kainos (2026-09-23).
+WORKDAY_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+}
+
+
+def _workday_endpoint(slug: str) -> tuple[str, str, str]:
+    """Parse `slug` into (base_url, tenant, site).
+
+    Workday is the one ATS here whose "slug" is not a single identifier, because
+    a Workday career site is addressed by a tenant SUBDOMAIN plus a site path:
+
+        https://<tenant>.<wdN>.myworkdayjobs.com/en-US/<site>/...
+
+    So the slug is written exactly like the path in a careers URL —
+    `tenant/site` — and an optional third part picks a non-default region:
+
+        kainos/kainos        -> kainos.wd3.myworkdayjobs.com, site "kainos"
+        kainos/kainos/wd1    -> kainos.wd1.myworkdayjobs.com
+
+    A single-part slug is REJECTED rather than guessed at. "kainos" alone is
+    ambiguous — tenant with an unknown site, or a site name? — and a guess
+    produces a request to a URL that does not exist. That failure is silent:
+    Workday answers with an empty posting list, so the company contributes
+    nothing while looking correctly configured.
+
+    THE HOST IS BUILT FROM THE TENANT, and getting that wrong fails SILENTLY.
+    `wd3.myworkdayjobs.com` on its own is the shared apex, not a tenant: it does
+    not resolve, so the request is refused and the company contributes nothing
+    while looking perfectly configured. That is exactly the mistake this function
+    made first time round (caught 2026-09-23 by printing the resolved URL rather
+    than trusting a unit test), which is why a slug that already looks like a
+    hostname is rejected loudly instead of being concatenated into nonsense.
+
+    The second part is usually the same word as the tenant but is NOT always:
+    some tenants serve several sites (a graduate site, a subsidiary), so it is
+    kept separate rather than assumed.
+    """
+    parts = [p for p in (slug or "").split("/") if p]
+    if not parts:
+        raise ValueError("workday slug must be 'tenant/site', e.g. 'kainos/kainos'")
+    if "." in parts[0]:
+        raise ValueError(
+            f"workday slug {slug!r} looks like a hostname. Give 'tenant/site' "
+            f"(e.g. 'kainos/kainos') — the tenant subdomain and the site path — "
+            f"not the full host, which is derived from the tenant.")
+
+    region = WORKDAY_DEFAULT_REGION
+    if len(parts) == 1:
+        raise ValueError(
+            f"workday slug {slug!r} needs both parts: 'tenant/site' "
+            f"(e.g. 'kainos/kainos'). A single name cannot say which is which, "
+            f"and guessing yields a URL that returns no jobs at all.")
+    if len(parts) == 2:
+        tenant, site = parts
+    else:
+        tenant, site, region = parts[0], parts[1], parts[2]
+    if region not in ("wd1", "wd2", "wd3", "wd5", "wd10", "wd12", "wd103"):
+        raise ValueError(f"workday region {region!r} is not one of wd1/wd2/wd3/wd5/…")
+    return f"https://{tenant}.{region}.myworkdayjobs.com", tenant, site
+
+
+def _workday_location(primary, additional) -> str:
+    """Every location a posting is open to, primary first.
+
+    Joined rather than reduced to one value because the location filter is an
+    ALLOWLIST: a role advertised in Birmingham AND as a UK home worker is a role
+    this candidate can do, and only the home-worker option makes that visible.
+    Deduplicated case-insensitively, because a posting commonly lists its primary
+    site again inside `additionalLocations`."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in [primary] + list(additional or []):
+        text = str(value or "").strip()
+        if text and text.lower() not in seen:
+            seen.add(text.lower())
+            out.append(text)
+    return ", ".join(out)
+
+
+def _workday_detail(base_url: str, tenant: str, site: str,
+                    external_path: str) -> tuple[str, str]:
+    """(description_html, location) for one posting.
+
+    The list endpoint gives neither a description NOR a usable location — it
+    collapses multi-site roles to "5 Locations" — so this request is the only way
+    to learn where a posting really is. That matters more than it sounds: the
+    location filter decides whether a posting is kept at all, so a UK role hidden
+    inside a multi-location posting is dropped without anyone seeing it.
+
+    Read live off the Kainos board, 2026-09-23:
+
+        Senior Test Engineer (Public Sector) -> location "Homeworker - UK",
+            additionalLocations [Gdansk, Derry-Londonderry, Belfast, Birmingham]
+        Lead Test Engineer (Healthcare)      -> location "Birmingham",
+            additionalLocations [Derry-Londonderry, Belfast, "Homeworker - UK"]
+
+    Both accept a UK home worker and so should be kept. But the second would be
+    dropped on `location` alone ("Birmingham"), and both are dropped on the
+    list's "4 Locations" / "5 Locations" — which is precisely the silent loss
+    `_workday_location` exists to prevent.
+
+    Best-effort: any failure degrades to ("", "") — an empty description means
+    "unknown, don't reject on stack alone" (see filters.jd_stack_mismatch), never
+    a crash."""
+    try:
+        resp = httpx.get(
+            f"{base_url}/wday/cxs/{tenant}/{site}{external_path}",
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json",
+                     "Content-Type": "application/json"},
+            timeout=TIMEOUT,
+        )
+        resp.raise_for_status()
+        info = resp.json().get("jobPostingInfo") or {}
+        parts = [info.get("jobDescription") or ""]
+        for key in ("qualifications", "additionalInformation"):
+            if info.get(key):
+                parts.append(str(info[key]))
+        return ("\n\n".join(p for p in parts if p),
+                _workday_location(info.get("location"), info.get("additionalLocations")))
+    except Exception:
+        return "", ""
+
+
+def fetch_workday(company_display_name: str, slug: str,
+                  search_text: str | None = None) -> list[dict]:
+    """Workday (CXS) public job board.
+
+    POST-based search API, 20 postings per request, paginated by offset.
+
+    `search_text` matters more here than the equivalent does elsewhere: instead
+    of guessing which job title a company calls a role ("Senior Test Engineer",
+    "QA Analyst", "Quality Engineer"), it can be asked for the concept and the
+    SERVER matches it against the whole posting text. But it narrows scope, so it
+    is opt-in per company via a `search:` key in companies.yaml rather than
+    applied to everyone.
+
+    Because the list gives no usable location, the detail fetch cannot be gated
+    on location the way SmartRecruiters' is — it is gated on TITLE, and any
+    posting whose title could plausibly be a target role gets expanded. That
+    bounds the extra requests to roughly the number of relevant-looking roles
+    rather than the size of the board."""
+    base_url, tenant, site = _workday_endpoint(slug)
+    jobs: list[dict] = []
+    offset = 0
+    limit = 20
+    seen_paths: set[str] = set()
+
+    while True:
+        resp = httpx.post(
+            f"{base_url}/wday/cxs/{tenant}/{site}/jobs",
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+            json={"appliedFacets": {}, "limit": limit, "offset": offset,
+                  "searchText": search_text or ""},
+            timeout=TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        postings = data.get("jobPostings") or []
+        if not postings:
+            break
+
+        for p in postings:
+            external_path = p.get("externalPath") or ""
+            if not external_path or external_path in seen_paths:
+                continue
+            seen_paths.add(external_path)
+
+            title = p.get("title", "")
+            # The list's `locationsText` is "N Locations" for multi-site roles,
+            # so it cannot be trusted to decide keep/drop. Expand anything whose
+            # title looks like a target role; `filters.passes_filters` then makes
+            # the real location decision on the expanded value.
+            description = ""
+            location = p.get("locationsText", "")
+            if filters.title_is_relevant(title):
+                description, expanded = _workday_detail(
+                    base_url, tenant, site, external_path)
+                # Prefer the expanded locations whenever the detail gave us any:
+                # "5 Locations" is not a place, and `filters.passes_filters`
+                # cannot make a keep/drop decision from it.
+                if expanded:
+                    location = expanded
+
+            jobs.append({
+                "company": company_display_name,
+                "title": title,
+                "location": location,
+                "url": f"{base_url}/en-US/{site}{external_path}",
+                # "Posted Today" / "Posted 3 Days Ago" — a relative phrase,
+                # which lib/dates.ts already parses (app/add_job.py accepts the
+                # same shape from a hand-pasted advert).
+                "posted_at": p.get("postedOn"),
+                "description": description,
+            })
+
+        total = data.get("total")
+        offset += limit
+        if len(postings) < limit or (isinstance(total, int) and offset >= total):
+            break
+    return jobs
+
+
 FETCHERS = {
     "greenhouse": fetch_greenhouse,
     "ashby": fetch_ashby,
     "workable": fetch_workable,
     "lever": fetch_lever,
     "smartrecruiters": fetch_smartrecruiters,
+    "workday": fetch_workday,
 }
 
 
@@ -227,7 +435,13 @@ def fetch_company(company: dict) -> list[dict]:
     fetcher = FETCHERS.get(company["ats"])
     if fetcher is None:
         raise ValueError(f"No fetcher for ATS type: {company['ats']}")
-    jobs = fetcher(company["name"], company["slug"])
+    # `search` is a pipeline-level control (like adzuna's max_pages), not a
+    # field the ATS itself receives — so it is passed only to fetchers that
+    # declare they accept it, rather than splatted into every signature.
+    if company.get("search") and fetcher is fetch_workday:
+        jobs = fetcher(company["name"], company["slug"], search_text=company["search"])
+    else:
+        jobs = fetcher(company["name"], company["slug"])
     for j in jobs:
         j["source"] = company["ats"]
     return jobs

@@ -1,0 +1,58 @@
+# =============================================================================
+# Tailored CV for one specific job.
+#
+# This file SELECTS and REORDERS master facts, and may override wording to
+# mirror the posting's vocabulary. It must never introduce a fact that is not
+# in cv/master.yaml — every `ref` is validated at render time, and the renderer
+# fails loudly on a dangling reference.
+#
+# Typical tailoring moves:
+#   - pick the summary variant closest to the role, then edit it
+#   - reorder / filter skill groups so the posting's stack leads
+#   - reorder achievements within each role so the most relevant is first
+#   - rewrite a bullet's wording to use the posting's exact term, without
+#     changing what happened
+#   - drop roles and bullets that add nothing for this posting
+# =============================================================================
+
+job:
+  slug: sample-data-engineer
+
+# Rewritten from summaries.technical_ic to lead with pipeline ownership and
+# mentoring, mirroring the posting's first two paragraphs.
+summary: >
+  Data engineer with eight years building and operating production pipelines,
+  most recently owning the orchestration and warehousing layer for a
+  multi-territory retail business. Comfortable across the full path from source
+  systems to modelled, tested, documented tables, and equally comfortable
+  mentoring the engineers who inherit them. Looking for a platform team where
+  data quality is treated as a product, not a chore.
+
+# Reordered so the posting's stack comes first. Every item exists in master.
+skills:
+  - group: Languages
+    items: [Python, SQL, Bash]
+  - group: Data Platform
+    items: [Snowflake, dbt, Apache Airflow, PostgreSQL, Apache Spark]
+  - group: Cloud & Infrastructure
+    items: [AWS, Terraform, Docker, Kubernetes]
+  - group: Practice
+    items: [Dimensional modelling, Mentoring, Stakeholder management, Agile delivery]
+
+# Roles in reverse-chronological order. Achievements reordered so
+# platform/scale work leads for a data-platform team.
+experience:
+  - ref: example-current
+    achievements:
+      - ref: ex-2
+      - ref: ex-1
+      - ref: ex-3
+      # ex-4 (ADR process) dropped: adds least for this posting.
+  - ref: example-previous
+    achievements:
+      - ref: pa-2   # automation/reporting leads for a platform role
+      - ref: pa-1
+      - ref: pa-3
+  - ref: example-first
+    achievements:
+      - ref: fr-1

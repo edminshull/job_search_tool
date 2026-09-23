@@ -1,5 +1,20 @@
 httpx>=0.27
 pyyaml>=6.0
-anthropic>=0.40
+# Optional: only needed for the Anthropic/Claude provider. DeepSeek is the
+# default provider and needs nothing beyond httpx (already listed above).
+# anthropic>=0.40
 python-dotenv>=1.0
 pytest>=8.0
+
+# --- CV tailoring (app/cv_tailor.py + the vendored scripts/) ----------------
+# The vendored engine's own dependencies, unchanged from the repo it came from.
+# NOT optional: render.py builds the PDF with fpdf2 and the editable DOCX with
+# python-docx, gap.py and keywords.py need PyYAML, and selftest.py cross-checks
+# rendered output by reading the PDF back with pypdf.
+#
+# Note these must be installed into the repo's OWN venv (./.venv/bin/python),
+# because the tailoring pipeline is invoked as a subprocess with that
+# interpreter — see app/cv_tailor._run_script for why.
+python-docx>=1.1
+fpdf2>=2.7
+pypdf>=5.0

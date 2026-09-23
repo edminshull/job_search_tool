@@ -1,0 +1,211 @@
+# =============================================================================
+# TEMPLATE — copy this to contract.yaml and put your own numbers in it.
+#
+#   cp contract.yaml.example contract.yaml
+#
+# contract.yaml is gitignored, and this file is why: the target salary below is
+# the one genuinely personal number here, and it is the input the deterministic
+# filters and app/contract_rates.py both read. Everything else in this file is
+# a public tax fact (pinned against gov.uk by app/tests/test_contract_rates.py)
+# and is the same for everyone. The split is drawn here rather than in a
+# per-directory .gitignore so anyone auditing what could ever be pushed sees it
+# in one place.
+#
+# If contract.yaml is absent, app/contract_rates.py falls back to reading this
+# file, so a fresh clone runs — it just runs on the example salary below until
+# you copy it across and edit it.
+# =============================================================================
+
+# Contract-role settings: the day-rate that is equivalent to a permanent
+# salary, plus the policy for which contract roles are in scope.
+#
+# Read by app/contract_rates.py. Run `python -m app.contract_rates` to print
+# the resulting day rates and the full arithmetic behind them.
+#
+# WHY THIS FILE EXISTS
+# A permanent £60,000 salary and a £60,000-a-year contract are NOT the same
+# thing, in either direction:
+#
+#   inside IR35  — you are taxed as an employee, but the fee the agency pays
+#                  must ALSO cover employer NIC, the apprenticeship levy,
+#                  pension and the umbrella's margin, because all of that
+#                  comes out of your rate before you are paid. Your rate has
+#                  to be grossed UP.
+#   outside IR35 — you are a business. The company pays corporation tax and
+#                  you take salary + dividends. Getting the same cash in
+#                  hand needs a LOWER headline rate, because dividends are
+#                  not charged employee NIC.
+#
+# So "£60k equivalent" resolves to two different thresholds, and the answer
+# depends on the tax year. Every number below is an input, not a hardcoded
+# constant — correct them here if a Budget changes them.
+
+tax_year: "2026/27"
+
+# The permanent salary a contract must match. Set this to YOUR OWN floor.
+# profile.yaml's constraints and the deterministic filters express the same
+# number, so change it in ONE place and every day rate in this tool moves with
+# it. The value below is an arbitrary example, not a recommendation.
+target_permanent_salary_gbp: 60000
+
+# Billable days per year. This is the single biggest lever on the answer:
+# 260 is every working day with no holiday (what Adzuna annualises with),
+# 220 allows ~6 weeks off plus a gap between contracts, and is the usual
+# UK contract-planning assumption. `python -m app.contract_rates` prints a
+# table across several values so you can see the sensitivity.
+working_days_per_year: 220
+
+# ---------------------------------------------------------------------------
+# Tax and contribution rates.
+#
+# VERIFIED against gov.uk on 2026-09-21 for the 2026/27 tax year. Note the
+# dividend rates: they rose by 2 points from April 2026 (8.75%/33.75% ->
+# 10.75%/35.75%). Any outside-IR35 figure you see quoted from 2025 is
+# therefore too optimistic. Sources are listed in README.md.
+# ---------------------------------------------------------------------------
+rates:
+  # Income tax (rUK, 2026/27). Bands are the total income at which each
+  # rate stops applying, already including the personal allowance.
+  personal_allowance: 12570
+  basic_rate_limit: 50270        # 12,570 PA + 37,700 basic-rate band
+  higher_rate_limit: 125140
+  basic_rate: 0.20
+  higher_rate: 0.40
+  additional_rate: 0.45
+  allowance_taper_threshold: 100000   # PA drops £1 per £2 above this
+
+  # Employee (primary) Class 1 NIC. Rate is 8% between the primary
+  # threshold and the upper earnings limit, then 2%.
+  employee_nic_primary_threshold: 12570
+  employee_nic_upper_earnings_limit: 50270
+  employee_nic_main_rate: 0.08
+  employee_nic_upper_rate: 0.02
+
+  # Employer (secondary) Class 1 NIC — a pure business cost on top of your
+  # salary. 15% above a £5,000 threshold since April 2025.
+  employer_nic_secondary_threshold: 5000
+  employer_nic_rate: 0.15
+
+  # Apprenticeship Levy: 0.5% above a £15,000 allowance, paid by employers
+  # with a pay bill over £3m. Umbrella companies are well over that, so it
+  # is passed on to the contractor. Set `umbrella.apprenticeship_levy:
+  # false` below if your umbrella confirms it does not apply it.
+  apprenticeship_levy_rate: 0.005
+  apprenticeship_levy_allowance: 15000
+
+  # Dividends, 2026/27. The allowance is taxed at 0% but still uses up
+  # basic-rate band space, which is why it appears in the arithmetic.
+  dividend_allowance: 500
+  dividend_basic_rate: 0.1075
+  dividend_higher_rate: 0.3575
+  dividend_additional_rate: 0.3935
+
+  # Corporation tax: 19% small profits rate at or below £50,000, 25% main
+  # rate at or above £250,000, and Marginal Relief in between — which
+  # produces an effective ~26.5% on the slice in the middle. A contractor
+  # company at this revenue level lands squarely in the Marginal Relief
+  # band, so modelling it as a flat 19% understates the tax by thousands.
+  corporation_tax_small_profits_rate: 0.19
+  corporation_tax_main_rate: 0.25
+  corporation_tax_small_profits_limit: 50000
+  corporation_tax_main_rate_limit: 250000
+  corporation_tax_marginal_relief_fraction: 0.015   # 3/200
+
+  # Auto-enrolment: employer minimum 3% of qualifying earnings between
+  # £6,240 and £50,270.
+  pension_lower_qualifying_earnings: 6240
+  pension_upper_qualifying_earnings: 50270
+  pension_employer_min_rate: 0.03
+
+# ---------------------------------------------------------------------------
+# Inside IR35 — paid through an umbrella company
+# ---------------------------------------------------------------------------
+umbrella:
+  # Umbrella margin, deducted from the assignment rate before salary.
+  # £25/week is typical; check what yours actually charges.
+  margin_per_week_gbp: 25
+  weeks_per_year: 48
+  apprenticeship_levy: true
+  employer_pension: true
+
+# ---------------------------------------------------------------------------
+# Outside IR35 — your own limited company
+# ---------------------------------------------------------------------------
+limited_company:
+  # Salary is set at the personal allowance: it is tax-free and NIC-free at
+  # that level, and taking more salary instead of dividends is worse now
+  # that employer NIC is 15%. Employer NIC is still due on it, because the
+  # £5,000 secondary threshold is below the £12,570 primary threshold.
+  salary_gbp: 12570
+  # Accountancy, insurance, registered office — real, tax-deductible costs
+  # of running a company that a permanent employee never pays. Set to 0 to
+  # see the figure without them.
+  accountancy_fees_per_year_gbp: 1200
+  # Extra employer pension contribution funded from company profit. Such a
+  # contribution is deductible for corporation tax and attracts no NIC, so
+  # it is the most tax-efficient way to draw value out of a PSC. 0 = the
+  # headline comparison is cash-in-hand only; set to 1320.9 to also match
+  # the 3% employer pension a £60k permanent package would include.
+  pension_from_profits_gbp: 0
+
+# ---------------------------------------------------------------------------
+# Which contract roles are in scope
+# ---------------------------------------------------------------------------
+search:
+  # Compare a posting's day rate against the equivalent-day-rate thresholds
+  # above and label it:
+  #   pass   — meets the threshold for its IR35 status (or, if the status
+  #            is not stated, meets the stricter inside-IR35 one)
+  #   review — only viable if it is genuinely OUTSIDE IR35: it clears the
+  #            outside threshold but not the inside one, and the advert
+  #            does not say which applies
+  #   fail   — below both thresholds
+  #   unknown— no day rate stated anywhere in the posting
+  #
+  # Inside-IR35 roles are the expensive ones to gross up, so a rate that
+  # fails inside but passes outside is genuinely worth a look — that is
+  # exactly what `review` is for. It is a question to ask the agent, not an
+  # automatic rejection.
+  accept_inside_ir35: true
+  accept_outside_ir35: true
+  # When an advert never mentions IR35, assume the WORSE (inside) case for
+  # the pass/fail decision. Set false to assume outside IR35 instead, which
+  # is more generous but will wave through roles that later turn out to be
+  # inside and therefore underpay by ~15%.
+  unknown_ir35_is_inside: true
+
+  # Drop a CONTRACT posting outright when its day rate is below both
+  # thresholds — the mirror of the £60,000 permanent floor. Only fires on a
+  # stated rate: a posting with no rate in it is kept and shown as
+  # rate_verdict "unknown", because most contract ads do not quote one and
+  # silently dropping them would empty the board of the roles worth asking
+  # about. Permanent postings are never dropped by this rule.
+  reject_below_threshold: true
+
+  # Which day-rate sources are trustworthy enough to DROP a posting over.
+  #
+  #   stated                          the advert quotes the rate itself
+  #   derived_from_advertised_salary  the advertiser supplied an annual
+  #                                   salary and Adzuna annualised it at the
+  #                                   260 days below — verified to reproduce
+  #                                   the stated rate exactly, so it is the
+  #                                   advert's own figure in different units
+  #   estimated_by_adzuna             Adzuna guessed it from similar ads
+  #
+  # estimated_by_adzuna is deliberately ABSENT. Measured on a real run: it
+  # accounted for 56 of the 61 postings the floor would have dropped, and it
+  # is a third party's guess at the role rather than a statement about it.
+  # Those postings are still flagged "Below floor" on the board — they are
+  # just not deleted from the shortlist over a guess. Add it to this list if
+  # you would rather have a stricter board and accept the false negatives.
+  reject_sources:
+    - stated
+    - derived_from_advertised_salary
+
+  # Adzuna reports a contract's pay as an ANNUALISED salary. Measured
+  # empirically against live ads on 2026-09-21: salary_max / stated day rate
+  # was exactly 260 for every ad that quoted both (260 = 5 days x 52 weeks,
+  # i.e. no holiday and no bench). So dividing an Adzuna contract salary by
+  # 260 recovers the day rate. This is a derived figure, not a quote — it is
+  # labelled as such on the board so it is never mistaken for a stated rate.
+  adzuna_contract_annualisation_days: 260
