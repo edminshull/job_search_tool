@@ -38,9 +38,10 @@ def loose_model():
 # whatever the local contract.yaml happens to hold. contract.yaml carries a
 # personal target salary and is gitignored, so a fresh clone loads
 # contract.yaml.example, whose example salary is a different number — and a pin
-# that moved with the configured salary would not be pinning anything. This is
-# the example salary shipped in contract.yaml.example.
-PINNED_SALARY = 60000
+# that moved with the configured salary would not be pinning anything. The value
+# is arbitrary and deliberately unrelated to the shipped example: £100,000 is a
+# round figure sitting just below the personal-allowance taper.
+PINNED_SALARY = 100000
 
 
 @pytest.fixture
@@ -83,27 +84,31 @@ def test_shipped_config_matches_the_verified_2026_27_rates(model):
     assert model.days == 220
 
 
-def test_income_tax_and_nic_on_a_70k_salary(model):
-    # £70,000: 20% on the £37,700 basic band + 40% on the £19,730 above it.
-    assert model.income_tax(70000) == pytest.approx(15432.00, abs=0.01)
-    assert model.employee_nic(70000) == pytest.approx(3410.60, abs=0.01)
-    assert model.net_from_salary(70000) == pytest.approx(51157.40, abs=0.01)
+def test_income_tax_and_nic_on_a_100k_salary(model):
+    # £100,000: 20% on the £37,700 basic band + 40% on the £49,730 above it.
+    # Note this is exactly the taper threshold, and the taper is `>` not `>=`,
+    # so the personal allowance is still the full £12,570 here.
+    assert model.income_tax(100000) == pytest.approx(27432.00, abs=0.01)
+    assert model.employee_nic(100000) == pytest.approx(4010.60, abs=0.01)
+    assert model.net_from_salary(100000) == pytest.approx(68557.40, abs=0.01)
 
 
 def test_personal_allowance_taper_applies_above_100k(model):
-    # Not relevant at a £70k target, but perm_equivalent returns salaries
-    # above £100k for high day rates, and the taper is what makes those
-    # correct: ignoring it understates tax by thousands.
+    # The taper is not triggered by the £100k test salary above, but
+    # perm_equivalent returns salaries past the threshold for high day rates,
+    # and the taper is what makes those correct: ignoring it understates tax by
+    # thousands.
     assert model.allowance_for(90000) == 12570
+    assert model.allowance_for(100000) == 12570
     assert model.allowance_for(110000) == pytest.approx(7570)
     assert model.allowance_for(140000) == 0
     assert model.net_from_salary(102000) < 102000 - model.income_tax(102000) + 1  # sanity: no sign error
 
 
 def test_employer_costs_are_the_gross_up(model):
-    assert model.employer_nic(70000) == pytest.approx(9750.00, abs=0.01)
-    assert model.employer_pension(70000) == pytest.approx(1320.90, abs=0.01)
-    assert model.apprenticeship_levy(70000) == pytest.approx(275.00, abs=0.01)
+    assert model.employer_nic(100000) == pytest.approx(14250.00, abs=0.01)
+    assert model.employer_pension(100000) == pytest.approx(1320.90, abs=0.01)
+    assert model.apprenticeship_levy(100000) == pytest.approx(425.00, abs=0.01)
     assert model.employer_nic(5000) == 0
     assert model.employer_nic(4000) == 0
 
@@ -138,8 +143,8 @@ def test_dividend_tax_uses_the_2026_27_rates_and_the_500_allowance(model):
 
 def test_the_two_day_rates_at_220_days(pinned_model):
     rates = pinned_model.day_rates()
-    assert rates["inside_ir35"]["day_rate_gbp"] == pytest.approx(322.71, abs=0.05)
-    assert rates["outside_ir35"]["day_rate_gbp"] == pytest.approx(273.57, abs=0.05)
+    assert rates["inside_ir35"]["day_rate_gbp"] == pytest.approx(532.71, abs=0.05)
+    assert rates["outside_ir35"]["day_rate_gbp"] == pytest.approx(492.22, abs=0.05)
     # Inside IR35 must always need MORE than outside for the same take-home,
     # because the umbrella's employer NIC comes out of the rate. If this ever
     # inverts, the model is wrong, not the world.
@@ -166,8 +171,8 @@ def test_day_rate_scales_inversely_with_billable_days(pinned_model):
     # must mean a higher rate for the same annual money.
     at_220 = pinned_model.day_rates(days=220)["inside_ir35"]["day_rate_gbp"]
     at_260 = pinned_model.day_rates(days=260)["inside_ir35"]["day_rate_gbp"]
-    assert at_220 == pytest.approx(322.71, abs=0.05)
-    assert at_260 == pytest.approx(273.06, abs=0.05)
+    assert at_220 == pytest.approx(532.71, abs=0.05)
+    assert at_260 == pytest.approx(450.75, abs=0.05)
     assert at_220 / at_260 == pytest.approx(260 / 220, rel=1e-6)
 
 
@@ -188,7 +193,7 @@ def test_perm_equivalent_inverts_the_model_exactly(model):
 
 def test_multiplying_the_target_salary_moves_the_rates_proportionally(loose_model):
     base = loose_model.day_rates()["inside_ir35"]["day_rate_gbp"]
-    loose_model.target_salary = 140000
+    loose_model.target_salary = loose_model.target_salary * 2
     doubled = loose_model.day_rates()["inside_ir35"]["day_rate_gbp"]
     assert doubled > 1.9 * base
 
@@ -217,14 +222,14 @@ def test_parses_the_day_rate_shapes_uk_ads_use(text, expected):
 
 
 def test_uses_the_top_of_a_quoted_range():
-    # The £70k floor logic works off the top of a band, for the same reason:
+    # The salary-floor logic works off the top of a band, for the same reason:
     # whether a role is worth applying to depends on what it can reach.
     got = cr.parse_day_rates("£400 - £480 per day, inside IR35")
     assert got["max"] == 480
 
 
 @pytest.mark.parametrize("text", [
-    "Permanent role, £70,000 - £80,000 per annum",
+    "Permanent role, £100,000 - £110,000 per annum",
     "Salary up to £90,000",
     "Competitive salary, plus benefits",
     "£50 per day travel allowance",

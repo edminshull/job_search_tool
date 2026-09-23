@@ -253,7 +253,7 @@ def test_contract_flag_stores_the_day_rate_and_ir35_verdict(db):
     assert (got["day_rate_min"], got["day_rate_max"]) == (450.0, 500.0)
     assert got["day_rate_source"] == "stated"
     assert got["rate_verdict"] == "pass"
-    # £500/day outside IR35 is worth well over the £70k floor.
+    # £500/day outside IR35 is worth well over the salary floor.
     assert got["perm_equivalent"] > 90000
     # posted_at stays the free text the advert gave; lib/dates.ts parses it.
     assert got["posted_at"] == "3 days ago"

@@ -258,7 +258,7 @@ def test_adzuna_employment_type_is_read_from_contract_type():
             {"title": "Test Analyst", "company": {"display_name": "Xe"},
              "location": {"display_name": "London, UK"}, "redirect_url": "https://ex.com/2",
              "description": "y" * 600, "created": "2026-09-16T04:04:36Z",
-             "contract_type": "permanent", "salary_min": 60000, "salary_max": 70000,
+             "contract_type": "permanent", "salary_min": 60000, "salary_max": 100000,
              "salary_is_predicted": "0"},
             {"title": "SDET", "company": {"display_name": "Acme"},
              "location": {"display_name": "London, UK"}, "redirect_url": "https://ex.com/3",
@@ -326,7 +326,7 @@ def test_adzuna_predicted_salary_is_tagged_as_weaker_evidence():
 
 def test_permanent_roles_get_no_day_rate_at_all():
     """The 260-day annualisation applies to contract pay only. Turning a
-    permanent £70,000 salary into a "£269/day" role would be nonsense."""
+    permanent £100,000 salary into a "£385/day" role would be nonsense."""
     def fake_get(url, params=None, headers=None, timeout=None):
         if int(url.rsplit("/", 1)[-1]) > 1:
             return _fake_response(url, json_data={"results": []})
@@ -334,7 +334,7 @@ def test_permanent_roles_get_no_day_rate_at_all():
             {"title": "Senior QA Engineer", "company": {"display_name": "Monzo"},
              "location": {"display_name": "London, UK"}, "redirect_url": "https://ex.com/1",
              "description": "d" * 600, "contract_type": "permanent",
-             "salary_min": 70000, "salary_max": 80000, "salary_is_predicted": "0"},
+             "salary_min": 100000, "salary_max": 110000, "salary_is_predicted": "0"},
         ]})
 
     with patch.dict(os.environ, {"ADZUNA_APP_ID": "id", "ADZUNA_APP_KEY": "key"}), \
