@@ -684,7 +684,7 @@ a group; it does not decide whether the group exists. Every other group is still
 dropped freely when it does not serve the posting.
 
 The distinction that matters: `Claude Code` is **employer** work (AI-assisted
-test generation adopted at Visa/CurrencyCloud, `visa-10`), while the local-LLM
+test generation adopted in a commercial role), while the local-LLM
 stack is **personal** time. They live in different groups for that reason, and
 the master's comments say not to move them.
 

@@ -18,7 +18,7 @@ from app import dedup
 
 SAMPLE_JOBS = [
     # Should PASS: the archetypal target role — London hybrid Java SDET
-    {"company": "Visa / CurrencyCloud", "title": "Senior Test Automation Engineer",
+    {"company": "Example FinTech Ltd", "title": "Senior Test Automation Engineer",
      "location": "London - hybrid, 2 days per week onsite",
      "url": "https://example.com/jobs/1001",
      "description": "Java, Cucumber, RestAssured, Selenium, Jenkins, Kubernetes and Testcontainers."},
@@ -32,7 +32,7 @@ SAMPLE_JOBS = [
      "description": ""},
     # Should PASS: the "-ing" form. "Automation Testing Engineer" does NOT
     # contain the substring "test engineer" and is one of Ed's real postings.
-    {"company": "Ten10 Group", "title": "Automation Testing Engineer",
+    {"company": "Example Consultancy Ltd", "title": "Automation Testing Engineer",
      "location": "United Kingdom", "url": "https://example.com/jobs/1004",
      "description": "Ruby, Cucumber and Capybara automation."},
     # Should PASS: junior title still gets through, on purpose. The filters
@@ -85,7 +85,7 @@ SAMPLE_JOBS = [
      "location": "Sofia, Bulgaria", "url": "https://example.com/jobs/2009",
      "description": "Java and Selenium."},
     # Duplicate of the first PASS entry by URL -> dropped by dedup on 2nd pass
-    {"company": "Visa / CurrencyCloud", "title": "Senior Test Automation Engineer",
+    {"company": "Example FinTech Ltd", "title": "Senior Test Automation Engineer",
      "location": "London - hybrid, 2 days per week onsite",
      "url": "https://example.com/jobs/1001",
      "description": "Java, Cucumber, RestAssured, Selenium, Jenkins, Kubernetes and Testcontainers."},
@@ -97,7 +97,7 @@ SAMPLE_JOBS = [
     # location ("London" vs "London, UK") counts as two jobs, which is exactly
     # the duplicate-advert pattern that made four Harnham adverts one vacancy
     # in the CV repo.
-    {"company": "Visa / CurrencyCloud", "title": "Senior Test Automation Engineer",
+    {"company": "Example FinTech Ltd", "title": "Senior Test Automation Engineer",
      "location": "London - hybrid, 2 days per week onsite",
      "url": "https://example.com/jobs/1001-repost",
      "description": "Java, Cucumber, RestAssured, Selenium, Jenkins, Kubernetes and Testcontainers."},

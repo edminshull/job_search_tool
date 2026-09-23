@@ -123,7 +123,7 @@ def test_draft_parses_a_valid_yaml_document(valid_yaml):
 def test_draft_strips_a_markdown_fence_the_model_added():
     """A fenced document is a near-miss, not a failure: the schema asked for a
     raw string and models add fences anyway."""
-    fenced = "```yaml\nsummary: Hello there.\nexperience:\n  - ref: visa-cc\n```"
+    fenced = "```yaml\nsummary: Hello there.\nexperience:\n  - ref: emp-cc\n```"
     data = ct.parse_drafted_yaml(fenced)
     assert data["summary"] == "Hello there."
 
@@ -133,7 +133,7 @@ def test_draft_retries_once_with_the_parse_error_fed_back():
     selection, so the retry must tell it what was wrong — repeating the same
     prompt unchanged would just reproduce the same output."""
     bad = StubProvider(_draft_result("summary: [unclosed\n  bad: yaml"))
-    good = _draft_result("summary: Fine.\nexperience:\n  - ref: visa-cc\n")
+    good = _draft_result("summary: Fine.\nexperience:\n  - ref: emp-cc\n")
 
     class SequenceProvider(StubProvider):
         def complete(self, system, user, schema, max_tokens):
@@ -167,7 +167,7 @@ def test_a_truncated_draft_is_caught_here_not_two_stages_later():
     Real case, LEGO posting 2026-09-23: the model spent its budget on a
     2,200-character summary — it had pasted most of the master's summary
     variants together — was cut off inside the experience section, and the first
-    complaint surfaced in gap.py as "achievement ref 'None' (role 'visa-cc') is
+    complaint surfaced in gap.py as "achievement ref 'None' (role 'emp-cc') is
     not in master". The draft had already been reported as a success by then."""
     truncated = (
         "summary: A very long summary.\n"
@@ -175,9 +175,9 @@ def test_a_truncated_draft_is_caught_here_not_two_stages_later():
         "  - group: Test Automation\n"
         "    items: [Cucumber]\n"
         "experience:\n"
-        "  - ref: visa-cc\n"
+        "  - ref: emp-cc\n"
         "    achievements:\n"
-        "      - ref: visa-1\n"
+        "      - ref: emp-1\n"
         "        text: >\n"
         "          A bullet whose text block was cut off mid-sen\n"
         "      - ref:\n"
@@ -199,16 +199,16 @@ def test_an_absent_achievements_key_is_still_valid():
     """`achievements` ABSENT means "all of that role's achievements" in the
     engine's data model, so the structural check must not demand it — requiring
     it would reject a perfectly good minimal draft."""
-    data = ct.parse_drafted_yaml("summary: S\nexperience:\n  - ref: visa-cc\n")
-    assert data["experience"][0]["ref"] == "visa-cc"
+    data = ct.parse_drafted_yaml("summary: S\nexperience:\n  - ref: emp-cc\n")
+    assert data["experience"][0]["ref"] == "emp-cc"
     # An explicit EMPTY list is different from absent, and also valid.
-    data = ct.parse_drafted_yaml("summary: S\nexperience:\n  - ref: visa-cc\n    achievements: []\n")
+    data = ct.parse_drafted_yaml("summary: S\nexperience:\n  - ref: emp-cc\n    achievements: []\n")
     assert data["experience"][0]["achievements"] == []
 
 
 def test_a_skill_group_with_no_group_name_is_rejected():
     with pytest.raises(ct.TailorError, match="group"):
-        ct.parse_drafted_yaml("summary: S\nskills:\n  - items: [Cucumber]\nexperience:\n  - ref: visa-cc\n")
+        ct.parse_drafted_yaml("summary: S\nskills:\n  - items: [Cucumber]\nexperience:\n  - ref: emp-cc\n")
 
 
 # --- reference validation --------------------------------------------------
@@ -513,7 +513,7 @@ GOOD = {
 
 def _draft(model="local", provider="local"):
     return {"data": {"summary": "s"}, "report": "r", "provider": provider,
-            "model": model, "yaml_text": "summary: s\nexperience:\n  - ref: visa-cc\n"}
+            "model": model, "yaml_text": "summary: s\nexperience:\n  - ref: emp-cc\n"}
 
 
 class _StubProvider:
@@ -721,7 +721,7 @@ def test_post_text_uses_the_structured_conversion():
 # the candidate's history under it. These pin the fix.
 
 _REAL_MASTER = {
-    "experience": [{"company": "Visa / CurrencyCloud"}, {"company": "Ten10 Group"}],
+    "experience": [{"company": "Example FinTech Ltd"}, {"company": "Example Consultancy Ltd"}],
     "skill_groups": [
         {"group": "Domain", "items": ["FinTech", "Regulated Financial Services", "Payments"]},
         {"group": "Test Automation & Frameworks", "items": ["Cucumber"]},
@@ -771,7 +771,7 @@ def test_context_block_names_the_candidate_employers_and_real_domains():
     """Fact 1 and 2 from the block's docstring: where they actually worked, and
     which domains the master can support."""
     block = ct.posting_context_block({"company": "Kainos"}, _REAL_MASTER, _KAINOS_GAP_REPORT)
-    assert "Visa / CurrencyCloud, Ten10 Group" in block
+    assert "Example FinTech Ltd, Example Consultancy Ltd" in block
     assert "The posting's employer is: Kainos" in block
     assert "has NOT worked there" in block
     assert "FinTech" in block and "Regulated Financial Services" in block
@@ -916,16 +916,23 @@ def test_the_required_groups_actually_carry_the_local_llm_work():
         assert expected in items, f"'{expected}' is missing from the required groups"
 
 
-def test_reserialising_preserves_every_value_the_renderer_needs():
+def test_reserialising_preserves_every_value_the_renderer_needs(master_ids):
     """Rebuilding the YAML must not quietly drop a reworded bullet, a ref, the
     summary or the section order — the whole document is re-serialised, so this
-    is the check that the round trip is safe."""
+    is the check that the round trip is safe.
+
+    Refs come from the real master via `master_ids` rather than being written
+    out as literals: the final assertion runs the engine's own reference
+    validation, so a hardcoded id would quietly stop testing anything the
+    moment cv/master.yaml is re-keyed."""
+    roles, achievements = master_ids
+    role, first, second = roles[0], achievements[0], achievements[1]
     raw = (
         "summary: >\n  Senior SDET with nine years in FinTech.\n"
         "skills:\n  - group: Test Automation & Frameworks\n    items: [Cucumber]\n"
-        "experience:\n  - ref: visa-cc\n    achievements:\n"
-        "      - ref: visa-1\n        text: >\n          Reworded, same fact.\n"
-        "      - ref: visa-2\n"
+        f"experience:\n  - ref: {role}\n    achievements:\n"
+        f"      - ref: {first}\n        text: >\n          Reworded, same fact.\n"
+        f"      - ref: {second}\n"
         "section_order: [summary, skills, experience, education, certifications]\n"
     )
     data = ct.parse_drafted_yaml(raw)
@@ -934,7 +941,7 @@ def test_reserialising_preserves_every_value_the_renderer_needs():
     back = yaml.safe_load(ct._reserialise_with_groups(data, raw))
 
     assert "Reworded, same fact." in back["experience"][0]["achievements"][0]["text"]
-    assert [a["ref"] for a in back["experience"][0]["achievements"]] == ["visa-1", "visa-2"]
+    assert [a["ref"] for a in back["experience"][0]["achievements"]] == [first, second]
     assert back["summary"].startswith("Senior SDET")
     assert back["section_order"][0] == "summary"
     assert ct._validate_against_master(back) is None
@@ -945,7 +952,7 @@ def test_claude_code_is_restored_into_a_group_the_drafter_kept():
     `AI-Assisted Engineering` GROUP but trimmed `Claude Code` out of it — twice
     running, on a public-sector test role it judged AI-irrelevant. A group being
     present is not the same as the work being present, and Claude Code is the
-    strongest item available because it is EMPLOYER work (visa-10)."""
+    strongest item available because it is EMPLOYER work, not personal project work."""
     master = {"skill_groups": [
         {"group": "AI-Assisted Engineering",
          "items": ["Claude Code", "AI-Assisted Test Generation", "LLM-Assisted Development"]},

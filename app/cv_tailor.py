@@ -117,8 +117,8 @@ DEFAULT_VERIFY_PROVIDER = "deepseek"
 REQUIRED_SKILL_GROUPS = ("AI-Assisted Engineering", "Personal & Prototype Work")
 
 # Individual items held in place alongside the groups above. `Claude Code` is the
-# reason this exists: it is COMMERCIAL AI-assisted engineering (visa-10, AI-assisted
-# test generation adopted at Visa/CurrencyCloud), and the local model dropped it
+# reason this exists: it is COMMERCIAL AI-assisted engineering (AI-assisted test
+# generation adopted in a commercial role), and the local model dropped it
 # from the group while keeping the group — deciding that a public-sector test role
 # had no use for it, twice running. The group being present is not the same as the
 # work being present, which is the whole lesson of this section.
@@ -655,8 +655,8 @@ did. It is NEVER about ATTRIBUTION: moving the candidate's work into the employe
 Those look similar sentence by sentence, and only one of them is true.
 
 The failure to avoid, from a real draft for a public sector role at Kainos:
-  master says:  "nine years at Visa/CurrencyCloud across AML transaction monitoring,
-                 sanctions screening and compliance case management" (a FinTech employer)
+  master says:  "nine years at a FinTech employer across AML transaction monitoring,
+                 sanctions screening and compliance case management"
   draft said:   "Experience in public sector domains including financial crime
                  compliance, AML transaction monitoring, sanctions screening and
                  compliance case management"
@@ -729,7 +729,7 @@ WHICH SKILL GROUPS TO INCLUDE — read this before dropping a group
 Trim ITEMS freely; drop whole groups hardly ever. Omitting a group hides a whole kind of \
 experience, and two of them must appear on EVERY CV you write:
 
-  * `AI-Assisted Engineering` — and `Claude Code` MUST be listed in it. That is employer work (AI-assisted test generation adopted at Visa/CurrencyCloud), so it is the strongest AI item available and the one a relevance-minded drafter keeps dropping.
+  * `AI-Assisted Engineering` — and `Claude Code` MUST be listed in it. That is employer work (AI-assisted test generation adopted in a commercial role), so it is the strongest AI item available and the one a relevance-minded drafter keeps dropping.
   * `Personal & Prototype Work` — Playwright, Python, and the local LLM stack: Ollama, \
 llama.cpp, Qwen3-Coder, DeepSeek V4 Flash, Local LLM Deployment.
 
@@ -1008,7 +1008,7 @@ def parse_drafted_yaml(raw: str) -> dict:
 
     THE STRUCTURAL CHECKS HERE EXIST BECAUSE A TRUNCATED DRAFT PARSES CLEANLY.
     A response cut off at max_tokens mid-document is very often still valid
-    YAML — `- ref: visa-1` with its `text:` block lopped off is a perfectly
+    YAML — `- ref: emp-1` with its `text:` block lopped off is a perfectly
     well-formed list item — so `yaml.safe_load` returns a document and the draft
     sails on to fail later, in the gap report or the renderer, as a confusing
     "achievement ref 'None'". That happened on the LEGO posting (2026-09-23):
