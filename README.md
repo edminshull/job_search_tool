@@ -605,7 +605,7 @@ The mistake a small model makes is not random, so the prompt is built around it.
 A CV claims what the candidate HAS DONE; a posting describes what the employer
 IS. Rewording is vocabulary — choosing the posting's noun for work already done.
 Attribution is moving that work into the employer's world, and only one of those
-is true. The Kainos draft did the second: it kept every genuine activity and
+is true. The Acme draft did the second: it kept every genuine activity and
 silently attached them to a sector Ed has never worked in.
 
 Four layers now guard it, each doing a different job:
@@ -624,7 +624,7 @@ Four layers now guard it, each doing a different job:
    priority gaps — available, but not previously legible as a boundary.
 4. **The verifier plus automatic escalation**, which is what caught it.
 
-Measured on the same Kainos advert: the local model went from **reject** (a
+Measured on the same Acme advert: the local model went from **reject** (a
 fabricated public-sector claim) to **revise** (no sector claim anywhere, summary
 correctly reading "FinTech… regulated financial services") at the same ~66s.
 
@@ -707,7 +707,7 @@ now reported by `gap.py` itself.)
 
 The local 30B model has one characteristic failure, and it is worth knowing
 because it is not random: **it adopts the posting's framing as if it were your
-history.** On the Kainos public-sector role (2026-09-23) it relabelled nine years
+history.** On the Acme public-sector role (2026-09-23) it relabelled nine years
 of FinTech compliance work as *"experience in public sector domains"* — the exact
 kind of claim that wins a screening and collapses at interview.
 
@@ -720,7 +720,7 @@ verifier's `required_fixes` and quoted evidence, and the result is verified
 again before being shown. If the retry does not verify better than the original,
 the original is kept.
 
-- Reported real result on the Kainos role: `local` → **reject** → `deepseek` →
+- Reported real result on the Acme role: `local` → **reject** → `deepseek` →
   **revise**, in 67 seconds, with the fabricated claim gone.
 - The preview lists every attempt and why each was set aside, so a
   cloud-written CV never reads as the local model's work.

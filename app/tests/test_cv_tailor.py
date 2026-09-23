@@ -164,7 +164,7 @@ def test_a_truncated_draft_is_caught_here_not_two_stages_later():
     """A response cut off at max_tokens mid-document is very often STILL VALID
     YAML, so it parses cleanly and sails on to fail somewhere confusing.
 
-    Real case, LEGO posting 2026-09-23: the model spent its budget on a
+    Real case, Acme Digital Play posting 2026-09-23: the model spent its budget on a
     2,200-character summary — it had pasted most of the master's summary
     variants together — was cut off inside the experience section, and the first
     complaint surfaced in gap.py as "achievement ref 'None' (role 'emp-cc') is
@@ -337,7 +337,7 @@ def test_slugify_matches_the_cv_engines_own_rule():
     """Reused rather than reinvented, so a folder created by the button looks
     like one the original CLI would have created."""
     assert ct.slugify("Trading 212") == "trading-212"
-    assert ct.slugify("LEGO Digital Play") == "lego-digital-play"
+    assert ct.slugify("Acme Digital Play") == "acme-digital-play"
 
 
 def test_the_day_directory_is_fixed_on_first_prepare_and_reused(monkeypatch):
@@ -485,7 +485,7 @@ def test_cli_reports_an_error_as_json_with_a_nonzero_exit(tmp_path):
 
 
 # --- escalation: the local draft is rejected, so a stronger model re-drafts ----
-# Real case, Kainos public-sector role, 2026-09-23: the local model relabelled
+# Real case, Acme public-sector role, 2026-09-23: the local model relabelled
 # nine years of FinTech compliance work as "experience in public sector domains"
 # to match the posting's framing. The verifier rejected it, which is the system
 # working — but the user was left with a rejected draft and no obvious next step.
@@ -548,7 +548,7 @@ def test_critique_is_imperative_and_excludes_the_real_gaps():
 
     Those are gaps in the candidate's actual history, so "fix this" can only mean
     invent it — the one outcome the whole system exists to prevent. The verifier's
-    own Kainos note said the gap "must be removed rather than restated"."""
+    own Acme note said the gap "must be removed rather than restated"."""
     critique = ct._verifier_critique(BAD)
     assert "DELETE the public sector claim" in critique
     assert "CLAIMS THAT ARE NOT IN THE MASTER CV" in critique
@@ -570,7 +570,7 @@ def test_escalation_replaces_a_rejected_draft_with_a_better_verified_one(monkeyp
     monkeypatch.setattr(ct, "draft_cv", lambda *a, **k: second)
     verifier = _SequenceVerifier([GOOD])
 
-    out = ct._escalate_draft({"company": "Kainos"}, "posting", "gaps", BAD,
+    out = ct._escalate_draft({"company": "Acme"}, "posting", "gaps", BAD,
                              _draft(), verifier, {"master_coverage": 80.0})
     assert out is not None
     assert out["draft"] is second, "the cloud draft should replace the rejected one"
@@ -590,7 +590,7 @@ def test_escalation_keeps_the_original_when_the_retry_is_no_better(monkeypatch):
     monkeypatch.setattr(ct, "draft_cv", lambda *a, **k: _draft("deepseek-flash", "deepseek"))
     verifier = _SequenceVerifier([BAD])  # still rejected after the retry
 
-    out = ct._escalate_draft({"company": "Kainos"}, "posting", "gaps", BAD,
+    out = ct._escalate_draft({"company": "Acme"}, "posting", "gaps", BAD,
                              first, verifier, {"master_coverage": 80.0})
     assert out["draft"] is first, "the original draft must be kept"
     assert out["verification"] is BAD
@@ -638,7 +638,7 @@ def test_escalation_does_nothing_when_there_is_no_critique(monkeypatch):
 
 
 # --- HTML structure preservation for the gap report --------------------------
-# The bug this pins, found 2026-09-23 on the Kainos Workday advert: the posting
+# The bug this pins, found 2026-09-23 on the Acme Workday advert: the posting
 # is stored as HTML on ONE line (<h1>…</h1><ul><li>…</li></ul>), and
 # filters.strip_html replaces every tag with a SPACE. keywords.split_sections
 # finds headings only when they sit on their own line, so with the whole advert
@@ -714,7 +714,7 @@ def test_post_text_uses_the_structured_conversion():
 
 # --- the posting-context block: stopping the local model adopting the ---------
 # --- employer's world --------------------------------------------------------
-# The Kainos public-sector draft relabelled nine years of FinTech compliance work
+# The Acme public-sector draft relabelled nine years of FinTech compliance work
 # as "experience in public sector domains". Diagnosing it showed the information
 # was already available — the master's Domain group is FinTech-only — but nothing
 # told the model that a gap in the POSTING's context is not a licence to re-file
@@ -727,7 +727,7 @@ _REAL_MASTER = {
         {"group": "Test Automation & Frameworks", "items": ["Cucumber"]},
     ],
 }
-_KAINOS_GAP_REPORT = """# Keyword & ATS gap report: Senior Test Engineer (Public Sector)
+_ACME_GAP_REPORT = """# Keyword & ATS gap report: Senior Test Engineer (Public Sector)
 
 ## Headline
 
@@ -756,7 +756,7 @@ _KAINOS_GAP_REPORT = """# Keyword & ATS gap report: Senior Test Engineer (Public
 
 
 def test_priority_gap_parser_reads_both_tables_and_stops_at_the_next_section():
-    terms = ct._priority_gap_terms(_KAINOS_GAP_REPORT)
+    terms = ct._priority_gap_terms(_ACME_GAP_REPORT)
     assert terms == ["cypress", "teamcity", "public", "sector"], (
         "both priority tables must be read, and 'jenkins' from Well-evidenced "
         "priorities must NOT leak in as a gap")
@@ -770,9 +770,9 @@ def test_priority_gap_parser_tolerates_a_report_with_no_gaps():
 def test_context_block_names_the_candidate_employers_and_real_domains():
     """Fact 1 and 2 from the block's docstring: where they actually worked, and
     which domains the master can support."""
-    block = ct.posting_context_block({"company": "Kainos"}, _REAL_MASTER, _KAINOS_GAP_REPORT)
+    block = ct.posting_context_block({"company": "Acme"}, _REAL_MASTER, _ACME_GAP_REPORT)
     assert "Example FinTech Ltd, Example Consultancy Ltd" in block
-    assert "The posting's employer is: Kainos" in block
+    assert "The posting's employer is: Acme" in block
     assert "has NOT worked there" in block
     assert "FinTech" in block and "Regulated Financial Services" in block
 
@@ -780,7 +780,7 @@ def test_context_block_names_the_candidate_employers_and_real_domains():
 def test_context_block_names_the_ungovernable_gaps_explicitly():
     """Fact 3. 'public' and 'sector' must be named as gaps that stay gaps — the
     specific words the rejected draft turned into a claim."""
-    block = ct.posting_context_block({"company": "Kainos"}, _REAL_MASTER, _KAINOS_GAP_REPORT)
+    block = ct.posting_context_block({"company": "Acme"}, _REAL_MASTER, _ACME_GAP_REPORT)
     assert "cypress" in block and "public" in block and "sector" in block
     assert "GAPS. They stay gaps" in block
     assert "must not appear as a description of the candidate" in block
@@ -796,9 +796,9 @@ def test_context_block_says_a_domain_absent_from_the_list_cannot_be_claimed():
 def test_the_context_block_comes_before_the_posting_text_in_the_prompt():
     """ORDER IS ARGUMENT. A model that meets the constraint after 3,000 words of
     the employer's own marketing has already absorbed that framing, which is
-    exactly how the Kainos draft went wrong."""
-    prompt = ct.build_draft_prompt({"company": "Kainos", "title": "T"}, "POSTING TEXT HERE",
-                                   _KAINOS_GAP_REPORT, "MASTER TEXT",
+    exactly how the Acme draft went wrong."""
+    prompt = ct.build_draft_prompt({"company": "Acme", "title": "T"}, "POSTING TEXT HERE",
+                                   _ACME_GAP_REPORT, "MASTER TEXT",
                                    master_data=_REAL_MASTER)
     assert prompt.index("POSTING CONTEXT") < prompt.index("POSTING TEXT HERE")
     assert prompt.index("POSTING CONTEXT") < prompt.index("MASTER TEXT")
@@ -817,7 +817,7 @@ def test_a_prompt_without_master_data_omits_the_block_rather_than_crashing():
 # local-LLM work, and the OLD repo's tailored CVs carried `Personal & Prototype
 # Work` in four of their last six. My draft-prompt instruction — "list only the
 # skill items that serve this posting; the selection is the tailoring" — is right
-# about ITEMS and was applied by the local model to whole GROUPS, so the Kainos
+# about ITEMS and was applied by the local model to whole GROUPS, so the Acme
 # CV shipped with no Playwright, Python, Ollama, llama.cpp, Qwen or local-LLM
 # content at all. The code now holds the line, because a model that ignores an
 # instruction cannot omit them.

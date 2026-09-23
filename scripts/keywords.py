@@ -1342,7 +1342,7 @@ def _term_in(canonical: str, surfaces: set[str], token_set: set[str], haystack: 
                 # words can supply the parts by coincidence: "risk-based" was
                 # EVIDENCED against a CV containing "Risk Profiling" (risk) and
                 # "Kubernetes-based tooling" (based), which silently credited Ed
-                # with risk-based test design — the exact gap the LEGO run had
+                # with risk-based test design — the exact gap the Acme Digital Play run had
                 # already declined to claim. Both parts were present and the
                 # compound was not.
                 #

@@ -96,7 +96,7 @@ DEFAULT_VERIFY_PROVIDER = "deepseek"
 #
 # These two hold the AI and local-LLM work, and they were being DROPPED — not by
 # the master, which has always had them, but by the drafter. Found 2026-09-23:
-# the Kainos draft omitted both, and the resulting CV had no Playwright, Python,
+# the Acme draft omitted both, and the resulting CV had no Playwright, Python,
 # Ollama, llama.cpp, Qwen or local-LLM content at all. The old repo's tailored
 # CVs carried `Personal & Prototype Work` in four of its last six, so this was a
 # REGRESSION introduced by an over-correction in the draft prompt ("list only the
@@ -218,7 +218,7 @@ def merge_required_groups(tailored_data: dict, master_data: dict) -> tuple[dict,
 
 DRAFT_MAX_TOKENS = 4096
 # The verifier writes prose, not a document, and was still truncating at 2000
-# tokens on a posting with several real gaps: its findings for the LEGO ad ran
+# tokens on a posting with several real gaps: its findings for the Acme Digital Play ad ran
 # past 5,000 characters, so the response was cut off and the whole verification
 # was lost as "returned nothing usable" — the check silently not happening,
 # which is the one failure mode that matters here. Generous on purpose: this
@@ -305,7 +305,7 @@ def html_to_structured_text(html: str) -> str:
     where the whole advert is one line of `<h1>…</h1><ul><li>…</li></ul>` —
     collapses into a single line with no headings at all. Every term then falls
     into "other", section weighting is silently lost, and the report claims the
-    posting has almost no requirement-level terms. Measured on the Kainos Lead
+    posting has almost no requirement-level terms. Measured on the Acme Lead
     Test Engineer advert (2026-09-23): 144 terms extracted, only 3 classified as
     priority, with Jenkins, Selenium, CI/CD and SQL all reported as "body text"
     despite sitting under "Essential Requirements". The coverage percentage that
@@ -654,7 +654,7 @@ Rewording is about VOCABULARY: choosing the posting's noun for work the candidat
 did. It is NEVER about ATTRIBUTION: moving the candidate's work into the employer's world. \
 Those look similar sentence by sentence, and only one of them is true.
 
-The failure to avoid, from a real draft for a public sector role at Kainos:
+The failure to avoid, from a real draft for a public sector role at Acme:
   master says:  "nine years at a FinTech employer across AML transaction monitoring,
                  sanctions screening and compliance case management"
   draft said:   "Experience in public sector domains including financial crime
@@ -842,7 +842,7 @@ def posting_context_block(job: dict, master_data: dict, gap_report: str) -> str:
     plain statements means the model spends its judgement on wording rather than
     on re-deriving facts, and the same posting cannot come out differently twice.
 
-    This block exists because of one real, expensive failure — the Kainos
+    This block exists because of one real, expensive failure — the Acme
     public-sector draft that relabelled nine years of FinTech compliance work as
     "experience in public sector domains". Diagnosing it showed the information
     WAS available: the master's Domain group is FinTech-only, and gap.py had even
@@ -928,7 +928,7 @@ def build_draft_prompt(job: dict, posting: str, gap_report: str, master_yaml: st
     ORDER IS ARGUMENT, not formatting. The POSTING CONTEXT block comes FIRST,
     before the advert text, because it is the boundary the rest must be read
     within — a model that meets the constraints after 3,000 words of the
-    employer's own marketing has already absorbed that framing. (The Kainos
+    employer's own marketing has already absorbed that framing. (The Acme
     draft is the evidence: the posting's public-sector language won.)
 
     Then the gap report, which is the task list, then the master, which is the
@@ -1011,7 +1011,7 @@ def parse_drafted_yaml(raw: str) -> dict:
     YAML — `- ref: emp-1` with its `text:` block lopped off is a perfectly
     well-formed list item — so `yaml.safe_load` returns a document and the draft
     sails on to fail later, in the gap report or the renderer, as a confusing
-    "achievement ref 'None'". That happened on the LEGO posting (2026-09-23):
+    "achievement ref 'None'". That happened on the Acme Digital Play posting (2026-09-23):
     the model spent its budget on a 2,200-character summary, was cut off inside
     the experience section, and the first structural complaint surfaced two
     stages further downstream.
@@ -1427,7 +1427,7 @@ def _verifier_critique(verification: dict) -> str:
     `missing_must_haves` is deliberately EXCLUDED. Those are real gaps in the
     candidate's history, not drafting mistakes, and handing them to the drafter
     as things to fix invites exactly one outcome: inventing the experience. The
-    verifier's own note on the Kainos draft made the point — the public-sector
+    verifier's own note on the Acme draft made the point — the public-sector
     gap "must be removed rather than restated"."""
     parts: list[str] = []
     fixes = (verification.get("required_fixes") or "").strip()
@@ -1560,7 +1560,7 @@ def preview(conn, url: str, feedback: str | None = None, include_interview_prep:
 
         # ESCALATION. The local model writes most CVs well, but it has one
         # characteristic failure: it adopts the POSTING's framing as if it were
-        # the candidate's history. Verified on the Kainos public-sector role
+        # the candidate's history. Verified on the Acme public-sector role
         # (2026-09-23) — the draft relabelled nine years of FinTech compliance
         # work as "experience in public sector domains", which is exactly the
         # claim that wins a screening and collapses at interview.

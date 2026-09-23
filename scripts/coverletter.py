@@ -41,7 +41,7 @@ def parse(path: Path) -> tuple[str, list[str]]:
     editor's note that sits above the separator explains the convention, so it
     contains the literal characters `---` in prose ("Everything below the `---`
     is the letter body"). The split therefore happened INSIDE the note, and the
-    tail of the note plus a literal `---` were printed into the letter. The LEGO
+    tail of the note plus a literal `---` were printed into the letter. The Acme Digital Play
     cover letter shipped that way; see the self-test.
     """
     text = path.read_text(encoding="utf-8")

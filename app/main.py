@@ -213,10 +213,10 @@ if __name__ == "__main__":
 
     if args.company:
         # Matched against the slug's FIRST path segment as well as the whole
-        # slug, because workday slugs are two parts ("kainos/kainos") and the
-        # thing you naturally type is the company: `--company kainos`. An exact
+        # slug, because workday slugs are two parts ("acme/acme") and the
+        # thing you naturally type is the company: `--company acme`. An exact
         # comparison against the full slug would answer "No company with slug
-        # 'kainos'", which reads like the entry is missing when it is right
+        # 'acme'", which reads like the entry is missing when it is right
         # there. The whole-slug form still wins first, so a company whose short
         # name collides with another's tenant path can be addressed exactly.
         wanted = args.company.strip().lower()

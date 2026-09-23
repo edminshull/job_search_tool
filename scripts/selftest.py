@@ -207,7 +207,7 @@ def main() -> int:
     # unrelated words supply the parts by coincidence. "risk-based" was
     # EVIDENCED against a master containing "Risk Profiling" (risk) and
     # "Kubernetes-based tooling" (based) with the compound itself absent — which
-    # credited Ed with risk-based test design, the exact gap the LEGO run had
+    # credited Ed with risk-based test design, the exact gap the Acme Digital Play run had
     # already declined to claim. The parts must be ADJACENT.
     # Assertions run through _cv_index on realistic prose so the stemmed
     # haystack is built exactly as the pipeline builds it.
@@ -673,7 +673,7 @@ def main() -> int:
     # editor's note above the separator explains the convention, so it contains
     # "---" in prose ("Everything below the `---` is the letter body"), and the
     # split happened inside the note. The tail of the note plus a literal "---"
-    # were printed into the LEGO cover letter.
+    # were printed into the Acme Digital Play cover letter.
     print("\ncover letter parsing")
     import coverletter as clmod
 
@@ -704,7 +704,7 @@ def main() -> int:
 
     # A leaked note is the failure this parser exists to prevent, so it must
     # refuse to render rather than quietly send one. This is the check that
-    # would have caught the LEGO defect even if the split logic regressed.
+    # would have caught the Acme Digital Play defect even if the split logic regressed.
     with tempfile.TemporaryDirectory() as tmp:
         leaking = Path(tmp) / "leaking.md"
         leaking.write_text(

@@ -146,7 +146,7 @@ if __name__ == "__main__":
     print("\nAll assertions passed.")
 
 # ---------------------------------------------------------------------------
-# fetch_workday — added 2026-09-23 with the Kainos entry.
+# fetch_workday — added 2026-09-23 with the Acme entry.
 #
 # Every case below is a way this fetcher fails SILENTLY rather than loudly, which
 # is why they are pinned rather than left to a live run to notice:
@@ -203,12 +203,12 @@ def test_workday_slug_builds_the_tenant_subdomain():
     `<tenant>.<region>.myworkdayjobs.com`. `wd3.myworkdayjobs.com` alone is the
     shared apex and does not resolve, so every request was connection-refused
     while the config looked entirely correct."""
-    base, tenant, site = ats_clients._workday_endpoint("kainos/kainos")
-    assert base == "https://kainos.wd3.myworkdayjobs.com"
-    assert tenant == "kainos" and site == "kainos"
+    base, tenant, site = ats_clients._workday_endpoint("acme/acme")
+    assert base == "https://acme.wd3.myworkdayjobs.com"
+    assert tenant == "acme" and site == "acme"
     # A hostname in the slug is refused outright rather than concatenated.
     with pytest.raises(ValueError, match="looks like a hostname"):
-        ats_clients._workday_endpoint("kainos.wd3.myworkdayjobs.com/kainos/kainos")
+        ats_clients._workday_endpoint("acme.wd3.myworkdayjobs.com/acme/acme")
 
 
 @pytest.mark.real_filters
@@ -216,17 +216,17 @@ def test_workday_slug_requires_both_parts():
     """A single name cannot say whether it is the tenant or the site, and a guess
     produces an empty posting list — a silent no-op, not an error."""
     with pytest.raises(ValueError, match="tenant/site"):
-        ats_clients._workday_endpoint("kainos")
+        ats_clients._workday_endpoint("acme")
     with pytest.raises(ValueError, match="tenant/site"):
         ats_clients._workday_endpoint("")
 
 
 @pytest.mark.real_filters
 def test_workday_slug_accepts_a_non_default_region():
-    base, _, _ = ats_clients._workday_endpoint("kainos/kainos/wd1")
-    assert base == "https://kainos.wd1.myworkdayjobs.com"
+    base, _, _ = ats_clients._workday_endpoint("acme/acme/wd1")
+    assert base == "https://acme.wd1.myworkdayjobs.com"
     with pytest.raises(ValueError, match="region"):
-        ats_clients._workday_endpoint("kainos/kainos/wd99")
+        ats_clients._workday_endpoint("acme/acme/wd99")
 
 
 @pytest.mark.real_filters
@@ -235,7 +235,7 @@ def test_workday_expands_multi_location_postings_so_uk_roles_survive():
     worker is one this candidate can do; judged on the primary location alone it
     is dropped, and judged on the list's "5 Locations" it is dropped too.
 
-    Uses the real values read off the Kainos board."""
+    Uses the real values read off the Acme board."""
     from app import filters
     posting = _wd_posting("Lead Test Engineer (Healthcare)", "/job/Birmingham/x")
     posting["locationsText"] = "4 Locations"
@@ -243,7 +243,7 @@ def test_workday_expands_multi_location_postings_so_uk_roles_survive():
          patch("httpx.get", return_value=_wd_detail_resp(
              "JD text", location="Birmingham",
              additional=["Derry-Londonderry", "Belfast", "Homeworker - UK"])):
-        jobs = ats_clients.fetch_workday("Kainos", "kainos/kainos")
+        jobs = ats_clients.fetch_workday("Acme", "acme/acme")
 
     assert len(jobs) == 1
     loc = jobs[0]["location"]
@@ -270,13 +270,13 @@ def test_workday_parses_fields_and_builds_the_public_url():
     with patch("httpx.post", return_value=_wd_list_resp([posting])), \
          patch("httpx.get", return_value=_wd_detail_resp(
              "<p>Automate the tests.</p>", location="Buenos Aires")):
-        jobs = ats_clients.fetch_workday("Kainos", "kainos/kainos")
+        jobs = ats_clients.fetch_workday("Acme", "acme/acme")
     j = jobs[0]
-    assert j["company"] == "Kainos"
+    assert j["company"] == "Acme"
     assert j["title"] == "Test Consultant"
     assert j["posted_at"] == "Posted 8 Days Ago"   # relative, parsed by lib/dates.ts
     assert "Automate the tests" in j["description"]
-    assert j["url"] == ("https://kainos.wd3.myworkdayjobs.com/en-US/kainos"
+    assert j["url"] == ("https://acme.wd3.myworkdayjobs.com/en-US/acme"
                         "/job/Buenos-Aires/Test-Consultant_JR_18381")
 
 
@@ -290,7 +290,7 @@ def test_workday_paginates_until_short_page():
     ]
     with patch("httpx.post", side_effect=pages), \
          patch.object(ats_clients, "_workday_detail", return_value=("", "")) as detail:
-        jobs = ats_clients.fetch_workday("Kainos", "kainos/kainos")
+        jobs = ats_clients.fetch_workday("Acme", "acme/acme")
     assert len(jobs) == 25, "must follow pagination rather than stop at the first page"
     assert detail.call_count == 25, "one detail fetch per relevant-titled posting"
 
@@ -307,13 +307,13 @@ def test_workday_dedupes_postings_repeated_across_pages():
     ]
     with patch("httpx.post", side_effect=pages), \
          patch.object(ats_clients, "_workday_detail", return_value=("", "")):
-        jobs = ats_clients.fetch_workday("Kainos", "kainos/kainos")
+        jobs = ats_clients.fetch_workday("Acme", "acme/acme")
     assert len(jobs) == 1
 
 
 @pytest.mark.real_filters
 def test_workday_skips_the_detail_fetch_for_irrelevant_titles():
-    """The cost control. Kainos has a 125-posting board of mostly consultancy
+    """The cost control. Acme has a 125-posting board of mostly consultancy
     roles; expanding every one would be 125 requests for jobs that die on title
     alone. Verified live: 43 listed, 4 with relevant titles."""
     postings = [
@@ -323,7 +323,7 @@ def test_workday_skips_the_detail_fetch_for_irrelevant_titles():
     ]
     with patch("httpx.post", return_value=_wd_list_resp(postings)), \
          patch.object(ats_clients, "_workday_detail", return_value=("JD", "London")) as detail:
-        jobs = ats_clients.fetch_workday("Kainos", "kainos/kainos")
+        jobs = ats_clients.fetch_workday("Acme", "acme/acme")
     assert len(jobs) == 3, "every posting is still returned; only the detail fetch is gated"
     assert detail.call_count == 1, "only the relevant-titled posting should be expanded"
     # The un-expanded ones keep the list's location text, so the location filter
@@ -341,7 +341,7 @@ def test_workday_a_failed_detail_fetch_degrades_gracefully():
     failing.raise_for_status = MagicMock(side_effect=RuntimeError("500"))
     with patch("httpx.post", return_value=_wd_list_resp([posting])), \
          patch("httpx.get", return_value=failing):
-        jobs = ats_clients.fetch_workday("Kainos", "kainos/kainos")
+        jobs = ats_clients.fetch_workday("Acme", "acme/acme")
     assert len(jobs) == 1
     assert jobs[0]["description"] == ""
     assert jobs[0]["location"] == "Belfast", "the list's location is kept as a fallback"
@@ -358,10 +358,10 @@ def test_workday_search_text_is_sent_to_the_server():
         return _wd_list_resp([])
 
     with patch("httpx.post", fake_post):
-        ats_clients.fetch_workday("Kainos", "kainos/kainos", search_text="test")
+        ats_clients.fetch_workday("Acme", "acme/acme", search_text="test")
 
     assert captured["payload"]["searchText"] == "test"
-    assert captured["url"] == "https://kainos.wd3.myworkdayjobs.com/wday/cxs/kainos/kainos/jobs"
+    assert captured["url"] == "https://acme.wd3.myworkdayjobs.com/wday/cxs/acme/acme/jobs"
     assert "User-Agent" in captured["headers"], "Workday 403s the default httpx UA on some tenants"
 
 
@@ -379,7 +379,7 @@ def test_workday_is_wired_into_fetchers_and_passes_search_through():
 
     with patch("httpx.post", fake_post):
         jobs = ats_clients.fetch_company(
-            {"name": "Kainos", "ats": "workday", "slug": "kainos/kainos", "search": "test"})
+            {"name": "Acme", "ats": "workday", "slug": "acme/acme", "search": "test"})
     assert jobs == []
     assert captured["payload"]["searchText"] == "test"
 

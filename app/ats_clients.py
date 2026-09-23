@@ -216,7 +216,7 @@ def fetch_smartrecruiters(company_display_name: str, slug: str) -> list[dict]:
 
 WORKDAY_DEFAULT_REGION = "wd3"   # the tenant is the subdomain: <tenant>.wd3.myworkdayjobs.com
 # Workday requires a human-ish UA on the CXS API; the default httpx UA gets 403
-# on some tenants. Verified against Kainos (2026-09-23).
+# on some tenants. Verified against Acme (2026-09-23).
 WORKDAY_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "application/json",
@@ -235,10 +235,10 @@ def _workday_endpoint(slug: str) -> tuple[str, str, str]:
     So the slug is written exactly like the path in a careers URL —
     `tenant/site` — and an optional third part picks a non-default region:
 
-        kainos/kainos        -> kainos.wd3.myworkdayjobs.com, site "kainos"
-        kainos/kainos/wd1    -> kainos.wd1.myworkdayjobs.com
+        acme/acme        -> acme.wd3.myworkdayjobs.com, site "acme"
+        acme/acme/wd1    -> acme.wd1.myworkdayjobs.com
 
-    A single-part slug is REJECTED rather than guessed at. "kainos" alone is
+    A single-part slug is REJECTED rather than guessed at. "acme" alone is
     ambiguous — tenant with an unknown site, or a site name? — and a guess
     produces a request to a URL that does not exist. That failure is silent:
     Workday answers with an empty posting list, so the company contributes
@@ -258,18 +258,18 @@ def _workday_endpoint(slug: str) -> tuple[str, str, str]:
     """
     parts = [p for p in (slug or "").split("/") if p]
     if not parts:
-        raise ValueError("workday slug must be 'tenant/site', e.g. 'kainos/kainos'")
+        raise ValueError("workday slug must be 'tenant/site', e.g. 'acme/acme'")
     if "." in parts[0]:
         raise ValueError(
             f"workday slug {slug!r} looks like a hostname. Give 'tenant/site' "
-            f"(e.g. 'kainos/kainos') — the tenant subdomain and the site path — "
+            f"(e.g. 'acme/acme') — the tenant subdomain and the site path — "
             f"not the full host, which is derived from the tenant.")
 
     region = WORKDAY_DEFAULT_REGION
     if len(parts) == 1:
         raise ValueError(
             f"workday slug {slug!r} needs both parts: 'tenant/site' "
-            f"(e.g. 'kainos/kainos'). A single name cannot say which is which, "
+            f"(e.g. 'acme/acme'). A single name cannot say which is which, "
             f"and guessing yields a URL that returns no jobs at all.")
     if len(parts) == 2:
         tenant, site = parts
@@ -308,7 +308,7 @@ def _workday_detail(base_url: str, tenant: str, site: str,
     location filter decides whether a posting is kept at all, so a UK role hidden
     inside a multi-location posting is dropped without anyone seeing it.
 
-    Read live off the Kainos board, 2026-09-23:
+    Read live off the Acme board, 2026-09-23:
 
         Senior Test Engineer (Public Sector) -> location "Homeworker - UK",
             additionalLocations [Gdansk, Derry-Londonderry, Belfast, Birmingham]
