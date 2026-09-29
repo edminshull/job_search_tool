@@ -97,6 +97,13 @@ ci:
 # lockfile exactly, and `--cache` keeps it away from the root-owned ~/.npm cache,
 # which otherwise fails with EPERM on this machine.
 #
+# The npm line is `cd $(REVIEW_DIR)/web && npm ci`, NOT `npm ci --prefix
+# $(REVIEW_DIR)/web`, and that is not a style choice. `--prefix` with an absolute
+# path from a foreign working directory makes npm resolve package.json against
+# the wrong root and bail with "Missing: web@0.1.0 from lock file" — a confusing
+# EUSAGE that looks like a broken lockfile rather than a path problem. Running
+# from inside the directory is the form that works.
+#
 # cv/ is symlinked in so the CV-tailoring suite RUNS instead of skipping under its
 # requires_real_master guard: that suite holds the fpdf2 / python-docx / pypdf
 # tests, i.e. exactly the dependencies most likely to be the bump. Remove the
@@ -120,7 +127,7 @@ dependabot-review:
 	python3 -m venv $(REVIEW_DIR)/.venv
 	$(REVIEW_DIR)/.venv/bin/python -m pip install -q -r $(REVIEW_DIR)/requirements.txt
 	ln -sfn $(CURDIR)/cv $(REVIEW_DIR)/cv
-	npm ci --prefix $(REVIEW_DIR)/web --cache $(REVIEW_DIR)/.npm-cache
+	cd $(REVIEW_DIR)/web && npm ci --cache $(REVIEW_DIR)/.npm-cache
 	$(MAKE) -C $(REVIEW_DIR) ci
 	@echo
 	@echo "=== $(BRANCH) reviewed in $(REVIEW_DIR) ==="
