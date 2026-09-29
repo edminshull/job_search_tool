@@ -98,7 +98,23 @@ jobs:
 
       # The whole suite, no exclusions. app/tests/test_cv_tailor.py skips itself
       # here — see "THE CV-TAILORING SUITE SKIPS ITSELF" above.
+      #
+      # QA_SKIP_DOCKER_TESTS is the repo's OWN opt-out (defined in
+      # app/tests/qa/upstream.py as "for CI jobs that should stay fast and
+      # offline"), and it is set deliberately: the three container tests pull
+      # python:3.12-alpine, mount the mock upstream and serve it over a real
+      # socket. That is slow and network-dependent — fine locally, wrong here.
+      #
+      # It is also load-bearing rather than cosmetic. A GitHub runner HAS Docker
+      # but NOT the `testcontainers` package (which is deliberately absent from
+      # requirements.txt), so the availability guard used to pass and the three
+      # tests ERRORED on import instead of skipping. The guard now checks for the
+      # package as well, so this is belt and braces: the flag keeps CI fast, the
+      # guard keeps the skip honest on any other machine with Docker but no
+      # testcontainers.
       - name: pytest
+        env:
+          QA_SKIP_DOCKER_TESTS: "1"
         run: .venv/bin/python -m pytest app/ -q
 
       # The main()-style modules print their own pass/fail summary and exit

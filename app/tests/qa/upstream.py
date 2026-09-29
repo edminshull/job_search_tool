@@ -61,8 +61,9 @@ MOUNT_TARGET = "/srv"
 STARTUP_TIMEOUT = 60
 
 DOCKER_SKIP_REASON = (
-    "needs a Docker daemon (or QA_UPSTREAM_URL pointing at a mock already "
-    "running) and neither is available — start Docker Desktop, or run "
+    "needs a Docker daemon AND the `testcontainers` package (or QA_UPSTREAM_URL "
+    "pointing at a mock already running), and they are not both available — "
+    "start Docker Desktop and `pip install testcontainers`, or run "
     "`python app/tests/qa/mock_upstream.py --port 8123` and set "
     "QA_UPSTREAM_URL=http://127.0.0.1:8123. These are the only tests that "
     "exercise the HTTP clients over a real socket; the rest of app/tests runs "
@@ -133,13 +134,36 @@ def external_upstream_url() -> str | None:
     return os.environ.get("QA_UPSTREAM_URL") or None
 
 
+def testcontainers_available() -> bool:
+    """Whether the `testcontainers` package is importable.
+
+    Needed as a separate check because these tests import it INSIDE the fixture
+    (deliberately — see the comment at the import), so a missing package surfaces
+    as a ModuleNotFoundError at fixture setup rather than as a clean skip.
+
+    It is also NOT in requirements.txt, because only these tests need it, which
+    makes "Docker is running but testcontainers was never installed" a real and
+    thoroughly confusing state. CI hit exactly that on 2026-09-29: a GitHub runner
+    HAS Docker, so `docker_available()` returned True, the skip was bypassed, and
+    three tests errored instead of skipping."""
+    try:
+        import testcontainers.core.container  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def upstream_available() -> bool:
     """Whether these tests can run at all, by either route.
 
     Checked rather than assumed so the skip reason can name both options; a
     message that only says "Docker" would send someone with a perfectly good
-    local mock looking for the wrong problem."""
-    return bool(external_upstream_url()) or docker_available()
+    local mock looking for the wrong problem. The container route needs BOTH a
+    daemon and the package, so both are checked — checking only for Docker is how
+    a runner with Docker and no testcontainers turned a skip into an error."""
+    return bool(external_upstream_url()) or (
+        docker_available() and testcontainers_available()
+    )
 
 
 requires_docker = pytest.mark.skipif(not upstream_available(), reason=DOCKER_SKIP_REASON)
