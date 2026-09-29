@@ -1,0 +1,181 @@
+# Continuous integration.
+#
+# WHAT THIS RUNS, AND WHY IT IS NOT QUITE `make test`
+# ---------------------------------------------------
+#   python job   pytest over all of app/ + the three standalone main()-style
+#                sanity scripts
+#   web job      node --test over web/lib + tsc --noEmit
+#   ui job       the Playwright suite in headless Chrome
+#
+# Every one of these is hermetic: no network, no secrets, no personal config
+# files. That is what makes it safe to run on a Dependabot PR.
+#
+# ORDERING MATTERS: this file must be merged to main BEFORE Dependabot's first
+# PR will be tested. Workflow runs triggered by Dependabot take the workflow
+# definition from the BASE branch, so a ci.yml that only exists on the PR branch
+# is never executed.
+#
+# SECRETS: workflow runs triggered by Dependabot get a READ-ONLY GITHUB_TOKEN and
+# no access to Actions secrets (Dependabot has its own separate secret store).
+# This workflow deliberately needs neither, so it works unmodified on those PRs.
+# If a future job needs a credential, it will silently get nothing on a
+# Dependabot PR — that is the trap this note exists to prevent.
+#
+# THE CV-TAILORING SUITE SKIPS ITSELF HERE
+# ----------------------------------------
+# app/tests/test_cv_tailor.py deliberately tests against the real cv/master.yaml
+# ("a fixture master would let a real dangling reference pass"), and cv/ is
+# gitignored because that file is the author's actual CV. CI has no such file,
+# which used to mean 16 failures and 11 errors.
+#
+# It carries a `requires_real_master` skip guard now (same shape as the
+# `requires_docker` marker in app/tests/test_qa_component_containers.py), so it
+# reports 127 clean skips naming the reason instead. No --ignore, no deselect
+# list: the suite is safe to run whole, and the skips are visible in the output
+# rather than hidden in this file.
+#
+# For a dependabot bump to fpdf2 / python-docx / pypdf — the dependencies that
+# suite actually exercises — run it locally on the PR branch. `git worktree`
+# keeps that from disturbing a dirty working tree:
+#
+#   git fetch origin '+refs/heads/dependabot/*:refs/remotes/origin/dependabot/*'
+#   git worktree add --detach /tmp/db-review origin/dependabot/pip/<branch>
+#   ln -s "$PWD/.venv" /tmp/db-review/.venv
+#   cd /tmp/db-review && .venv/bin/python -m pytest app/ -q
+#
+# (The .venv symlink works for Python. Do NOT symlink web/node_modules the same
+# way — Turbopack rejects a node_modules symlink that points outside the project
+# root and `next dev` will not start. Run a real `npm ci --prefix web` instead.)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only. Nothing here writes to the repository, and Dependabot PRs would not
+# have write access anyway.
+permissions:
+  contents: read
+
+# A new push to the same branch makes the previous run's result irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # --- Python: the fetch/dedup/filter pipeline, the ATS + aggregator clients,
+  # --- the screening and LLM-provider layers, contract arithmetic.
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Matches the local interpreter (3.14.x). Nothing here pins a version, but
+      # matching local is what makes "green locally" mean "green here".
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # A real venv at .venv/, not an install into the system interpreter. The
+      # Makefile defines VENV := $(CURDIR)/.venv and PY := $(VENV)/bin/python,
+      # and app/cv_tailor.py invokes the tailoring engine as a SUBPROCESS with
+      # that interpreter (see app/cv_tailor._run_script). Mirroring the layout
+      # the repo documents for itself is what keeps those paths working.
+      - name: Create the repo's own venv
+        run: python -m venv .venv
+
+      - name: Install dependencies
+        run: |
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt
+
+      # The whole suite, no exclusions. app/tests/test_cv_tailor.py skips itself
+      # here — see "THE CV-TAILORING SUITE SKIPS ITSELF" above.
+      - name: pytest
+        run: .venv/bin/python -m pytest app/ -q
+
+      # The main()-style modules print their own pass/fail summary and exit
+      # non-zero on failure. `make test` runs them, so CI does too.
+      - name: Standalone sanity scripts
+        run: |
+          .venv/bin/python -m app.tests.test_pipeline
+          .venv/bin/python -m app.tests.test_discover_companies
+          .venv/bin/python -m app.tests.test_ai_evaluate
+
+  # --- The board's own logic: date windowing, the CV tool's path handling, and
+  # --- the SQLite layer (including a native better-sqlite3 build).
+  web:
+    name: Web tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # Deliberately the same major as local development (v26.x). Node >= 22.18
+      # strips the TypeScript types in `node --test lib/*.test.ts` itself, which
+      # is why this repo needs no jest/vitest and no transpile step.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # `ci` not `install`: it installs the committed lockfile exactly, so a
+      # Dependabot PR's own lockfile change is what gets tested.
+      - name: Install dependencies
+        run: npm ci --prefix web
+
+      - name: Unit tests
+        run: npm --prefix web test
+
+      - name: Typecheck
+        run: npm --prefix web run typecheck
+
+  # --- The ten UI journeys, in headless Chrome.
+  # ---
+  # --- Kept out of `make test` locally (it is ~13s and wants Chrome), but it
+  # --- belongs in CI: a Next.js or React major is exactly the kind of bump that
+  # --- passes typecheck and still breaks the board.
+  ui:
+    name: UI tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --prefix web
+
+      # No `playwright install` step on purpose. playwright.config.ts uses
+      # `channel: "chrome"`, i.e. the Google Chrome already on the runner image,
+      # rather than a downloaded Chromium build. If that ever changes, this job
+      # needs `npx playwright install --with-deps chromium` instead.
+      #
+      # The suite is self-contained: e2e/scripts/serve-fixture-board.mjs builds a
+      # fixture database and starts `next dev` on its own port, so there is no
+      # setup step and data/seen_jobs.sqlite3 is never touched.
+      - name: Playwright
+        run: npm --prefix web run test:ui
+
+      - name: Upload the report when it fails
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 7

@@ -13,6 +13,20 @@ inference:
 
 The real master CV is used, because the refs being validated are its refs. That
 is deliberate: a fixture master would let a real dangling reference pass.
+
+NO cv/master.yaml? THE SUITE SKIPS, IT DOES NOT FAIL
+----------------------------------------------------
+That same deliberate dependence on the real master is why `cv/` is gitignored:
+master.yaml is a real person's CV, carrying their contact details and their whole
+employment history. A fresh clone, and therefore CI, has no such file.
+
+Without a guard that is 16 failures and 11 errors which say nothing about the
+code. So the module skips instead, naming the reason — see `requires_real_master`
+below. Substituting scripts/testdata/master.yaml is NOT a workaround: nine of
+these tests assert on the real CV's own content (its skill groups, its local-LLM
+pins), so a stand-in master only gets you from 27 red to 9 red.
+
+To run these, put your master CV at cv/master.yaml.
 """
 import json
 import re
@@ -25,6 +39,25 @@ import yaml
 
 from app import cv_tailor as ct
 from app import dedup
+
+# --- the real master CV is a prerequisite for this whole module -------------
+# `cv/` is gitignored (see the module docstring), so a machine without the
+# author's CV — a fresh clone, or CI — cannot run anything in this file. The
+# probe is one stat() at collection time, so there is nothing here worth caching.
+MASTER_SKIP_REASON = (
+    f"No master CV at {ct.MASTER_PATH}. These tests validate refs against the "
+    "REAL master on purpose (a fixture master would let a real dangling "
+    "reference pass), and cv/ is gitignored because that file is a real "
+    "person's CV. Put yours at cv/master.yaml to run them. "
+    "scripts/testdata/master.yaml is not a substitute: nine tests here assert "
+    "on the real CV's own content."
+)
+
+requires_real_master = pytest.mark.skipif(
+    not ct.MASTER_PATH.exists(), reason=MASTER_SKIP_REASON
+)
+
+pytestmark = requires_real_master
 
 
 # --- a stubbed provider ----------------------------------------------------

@@ -79,6 +79,55 @@ def fetch_ashby(company_display_name: str, slug: str) -> list[dict]:
     return jobs
 
 
+def _workable_location(j: dict) -> str:
+    """Workable reports its location in TWO different shapes, and only one of
+    them was ever read here.
+
+    The `?details=true` responses this fetcher actually requests put the facts
+    in FLAT fields plus a `locations` array, with `location` explicitly null:
+
+        {"location": null, "city": "London", "state": "England",
+         "country": "United Kingdom", "telecommuting": false,
+         "locations": [{"city": ..., "region": ..., "country": ...}]}
+
+    Some other Workable responses nest a single dict under `location` instead.
+    Reading only the nested form returned "" for EVERY job — and
+    filters.location_is_allowed("") is False, so every Workable posting was
+    silently dropped by the location filter.
+
+    That stayed invisible because all seven Workable companies in
+    companies.yaml are Canadian and would be dropped on location anyway. Found
+    2026-09, when UK Workable boards (Starling, Kroo, Yapily, Updraft, Ki
+    Insurance) were added and returned nothing at all despite live boards.
+
+    Multi-location postings are joined rather than truncated: a role open in
+    London AND Berlin has to be able to survive on the London one.
+    """
+    entries = [e for e in (j.get("locations") or [])
+               if isinstance(e, dict) and not e.get("hidden")]
+    if not entries:
+        nested = j.get("location")
+        if isinstance(nested, dict):
+            entries = [nested]
+    if not entries:
+        flat = {"city": j.get("city"), "region": j.get("state"),
+                "country": j.get("country")}
+        if any(flat.values()):
+            entries = [flat]
+
+    parts: list[str] = []
+    for e in entries:
+        s = ", ".join(filter(None, [e.get("city"), e.get("region") or e.get("state"),
+                                    e.get("country")]))
+        if s and s not in parts:
+            parts.append(s)
+    loc_str = "; ".join(parts)
+
+    if j.get("telecommuting") or any(e.get("workplace") == "remote" for e in entries):
+        loc_str = f"Remote ({loc_str})" if loc_str else "Remote"
+    return loc_str
+
+
 def fetch_workable(company_display_name: str, slug: str) -> list[dict]:
     # Workable's public widget API.
     url = f"https://apply.workable.com/api/v1/widget/accounts/{slug}?details=true"
@@ -87,14 +136,10 @@ def fetch_workable(company_display_name: str, slug: str) -> list[dict]:
     data = resp.json()
     jobs = []
     for j in data.get("jobs", []):
-        loc = j.get("location") or {}
-        loc_str = ", ".join(filter(None, [loc.get("city"), loc.get("region"), loc.get("country")]))
-        if loc.get("workplace") == "remote":
-            loc_str = f"Remote ({loc_str})" if loc_str else "Remote"
         jobs.append({
             "company": company_display_name,
             "title": j.get("title", ""),
-            "location": loc_str,
+            "location": _workable_location(j),
             "url": j.get("url") or j.get("shortlink", ""),
             "posted_at": j.get("published_on") or j.get("created_at"),
             # Workable's widget API doesn't reliably include a description

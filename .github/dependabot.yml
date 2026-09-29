@@ -1,0 +1,88 @@
+# Dependabot configuration.
+#
+# START HERE, BECAUSE THIS REPOSITORY IS A FORK
+# ---------------------------------------------
+# Dependabot pull requests are switched OFF BY DEFAULT for forks (GitHub made
+# that change in November 2022). Nothing in this file does anything at all until
+# they are turned on in THIS fork's own settings:
+#
+#   Settings -> Code security -> Dependabot -> Dependabot version updates -> Enable
+#
+# This file must also be present on the default branch (main) before Dependabot
+# reads it, so merge it first and enable the setting second. Dependabot alerts
+# and security updates are separate switches on the same page, and are also off
+# in this fork today.
+#
+# WHY GROUPS
+# ----------
+# One PR per dependency would mean a dozen open PRs a week, and the whole point
+# of this repo's setup is that every PR gets read and tested locally before it
+# is merged. Grouping minor and patch bumps into a single PR keeps that
+# sustainable. Majors are deliberately NOT grouped: those are the ones that need
+# a human, a changelog read and a real local test run.
+version: 2
+
+updates:
+  # --- Python -----------------------------------------------------------------
+  # requirements.txt is at the repository root, so the directory is "/".
+  #
+  # `versioning-strategy: increase` is load-bearing here. requirements.txt uses
+  # lower-bound ranges (`httpx>=0.27`, `pypdf>=5.0`), and Dependabot's default
+  # for a range that already admits the new version is to do nothing — so the
+  # default would open exactly zero pull requests. `increase` raises the floor,
+  # which is also what makes the update actually installable, and therefore
+  # testable, locally.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Europe/London
+    versioning-strategy: increase
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(py)"
+    groups:
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # --- The board --------------------------------------------------------------
+  # package-lock.json is committed, so an npm PR carries the lockfile change
+  # with it and `npm ci` in CI tests the exact dependency tree the PR proposes.
+  # The ecosystem is npm even though the app lives in web/ — the directory
+  # field is what points at it.
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: "07:00"
+      timezone: Europe/London
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(web)"
+    groups:
+      web-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # --- The workflows themselves ----------------------------------------------
+  # Keeps actions/checkout, setup-python, setup-node and upload-artifact current
+  # in .github/workflows/. Worth having: a stale action is a supply-chain risk in
+  # the one place that already has credentials.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: wednesday
+      time: "07:00"
+      timezone: Europe/London
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(ci)"
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

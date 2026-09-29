@@ -758,3 +758,131 @@ companies:
   # board is not fetched twice per run. This is the duplicate-entry bug this file
   # was cleaned of on the same date — worth knowing because "it is on two ATSes"
   # is a normal thing for a growing company, not an error.
+
+  # --- UK/EU fintech additions (2026-09) ------------------------------------
+  # Every slug below was probed against the live ATS API and its board name
+  # checked back against the company. A live board is NOT automatically the right
+  # one, and this pass proved it — REJECTED on identity grounds:
+  #
+  #   greenhouse/dna            board "DNA", Köln — a healthcare PR agency, not DNA Payments
+  #   workable/scalable         "Business Advisor" roles — not Scalable Capital
+  #   greenhouse/mesh           board "Mesh", Tokyo — not Mesh Payments
+  #   ashby/mesh                "Mesh Connect Jobs" — a different company again
+  #   greenhouse/traderepublic  board "Trade Republic Customer Council", 1 posting: live,
+  #                             real, and not the jobs board (the Coveo trap exactly)
+  #   ashby/vivid               board "Vivid", Tel Aviv — not Vivid Money
+  #   ashby/clark               board "Clark", New York — not the Berlin insurtech
+  #   ashby/primer              US locations, zero UK roles
+  #
+  # Revolut is NOT here because it has no board on any of the five supported ATSes
+  # — it runs its own careers site, so companies.yaml cannot reach it. Monzo, Wise
+  # and Starling are the neobank coverage; Monzo and Wise were already above, and
+  # all twelve pre-existing fintech entries were re-probed and are still live.
+  #
+  # The count in each comment is the number of postings that pass the LIVE
+  # filters.yaml location allowlist (London/UK), measured when the entry was added:
+  # it is what the entry actually contributes to this search, not the board's raw
+  # size. Adyen is 208 postings to yield 4; Starling is 109 to yield 100.
+  #
+  # NOT ADDED, though the boards are real: N26, Qonto, Pennylane, Bitpanda,
+  # Agicap, Ledger, Nium and TreviPay are 0-3 UK roles each, so under the current
+  # UK-only location filter they would cost an API call per run and return
+  # nothing. They are worth adding the day filters.yaml admits EU locations.
+  # (Qonto additionally runs two live boards, ashby/qonto and lever/qonto, with
+  # identical posting counts — per the Wayve note above, register at most one.)
+
+  # --- digital banking / neobanks ---
+  - name: "Starling Bank"     # 100 UK of 109 — neobank (workable: see the fetch_workable fix)
+    ats: workable
+    slug: starling-bank
+  - name: "Kroo"              # 20 UK of 20 — neobank
+    ats: workable
+    slug: kroo
+  - name: "Allica Bank"       # 19 UK of 40 — SME bank. The slug really is "allica-bank"
+    ats: ashby
+    slug: allica-bank
+  - name: "Shawbrook"         # 17 UK of 28 — challenger bank
+    ats: smartrecruiters
+    slug: shawbrook
+
+  # --- lending / credit ---
+  - name: "Lendable"          # 59 UK of 67 — consumer lender
+    ats: ashby
+    slug: lendable
+  - name: "Abound"            # 11 UK of 18 — consumer lender
+    ats: ashby
+    slug: abound
+  - name: "Updraft"           # 6 UK of 6 — credit builder
+    ats: workable
+    slug: updraft
+
+  # --- payments / payment infrastructure ---
+  - name: "Airwallex"         # 56 UK of 561 — global payments
+    ats: ashby
+    slug: airwallex
+  - name: "Dojo"              # 20 UK of 27 — card payments (Paymentsense)
+    ats: greenhouse
+    slug: dojo
+  - name: "Yapily"            # 8 UK of 10 — open banking
+    ats: workable
+    slug: yapily
+  - name: "Thunes"            # 7 UK of 46 — cross-border payments
+    ats: greenhouse
+    slug: thunes
+  - name: "Adyen"             # 4 UK of 208 — payments (Amsterdam; London is the UK hub)
+    ats: greenhouse
+    slug: adyen
+  - name: "Trustly"           # 4 UK of 23 — account-to-account payments
+    ats: ashby
+    slug: trustly
+  - name: "Mollie"            # 2 UK of 41 — payments (Amsterdam)
+    ats: ashby
+    slug: mollie
+
+  # --- banking infrastructure / B2B finance ---
+  - name: "Thought Machine"   # 18 UK of 42 — core banking platform
+    ats: ashby
+    slug: thought-machine
+  - name: "Pigment"           # 32 UK of 137 — FP&A platform
+    ats: lever
+    slug: pigment
+  - name: "Pleo"              # 15 UK of 32 — spend management (Copenhagen)
+    ats: ashby
+    slug: pleo
+
+  # --- wealth / savings ---
+  - name: "Moneybox"          # 14 UK of 17 — savings and investing
+    ats: ashby
+    slug: moneybox
+  - name: "Raisin"            # 4 UK of 33 — savings marketplace (Berlin, Manchester office)
+    ats: greenhouse
+    slug: raisin
+
+  # --- insurtech ---
+  - name: "Hyperexponential"  # 22 UK of 31 — insurance pricing (hx Renew)
+    ats: ashby
+    slug: hyperexponential
+  - name: "Ki Insurance"      # 17 UK of 17 — algorithmic Lloyd's syndicate
+    ats: workable
+    slug: ki-insurance
+
+  # --- regtech / crypto compliance ---
+  - name: "Elliptic"          # 12 UK of 30 — blockchain analytics
+    ats: ashby
+    slug: elliptic
+  - name: "CUBE"              # 4 UK of 16 — regulatory intelligence
+    ats: ashby
+    slug: cube
+  - name: "SteelEye"          # 1 UK of 2 — trade surveillance and compliance
+    ats: smartrecruiters
+    slug: steeleye
+
+  # --- crypto infrastructure ---
+  - name: "Fireblocks"        # 7 UK of 67 — digital asset custody
+    ats: greenhouse
+    slug: fireblocks
+
+  # --- revenue-based finance ---
+  - name: "Wayflyer"          # 3 UK of 18 — ecommerce growth finance (Dublin)
+    ats: ashby
+    slug: wayflyer

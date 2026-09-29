@@ -387,3 +387,145 @@ def test_workday_is_wired_into_fetchers_and_passes_search_through():
     with patch("httpx.post", return_value=_wd_list_resp([])):
         assert ats_clients.fetch_company(
             {"name": "Acme", "ats": "workday", "slug": "acme/acme"}) == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_workable — added 2026-09 with the UK fintech entries.
+#
+# Same theme as workday above: this fetcher failed SILENTLY rather than loudly.
+#
+# It read only the NESTED `location` dict, but the `?details=true` responses it
+# actually requests return `location: null` and put the facts in flat fields
+# (`city`/`state`/`country`/`telecommuting`) plus a `locations` array. So every
+# job came back with location "" — and filters.location_is_allowed("") is False,
+# which meant EVERY Workable posting was dropped on arrival, with nothing
+# anywhere reporting a problem.
+#
+# It stayed invisible because all seven Workable companies in companies.yaml are
+# Canadian, so being dropped gave the right answer for the wrong reason. Adding
+# UK Workable boards (Starling Bank, Kroo, Yapily, Updraft, Ki Insurance) is
+# what surfaced it: live boards, real jobs, zero results.
+#
+# The last test runs against the LIVE filters.yaml via `real_filters`, for the
+# reason spelled out at line 191 — under the pinned Canada/Alberta config a
+# London role is not an allowed location, so the assertion would pass vacuously
+# and pin nothing.
+# ---------------------------------------------------------------------------
+
+def _wk_job(**over):
+    """A job in the shape the `?details=true` widget API really returns:
+    `location` null, facts flat, plus a `locations` array. Values copied from a
+    live response (Yapily's London roles)."""
+    job = {
+        "title": "Software Engineer",
+        "shortlink": "https://apply.workable.com/j/ABC123",
+        "published_on": "2026-09-01",
+        "description": "<p>Build things</p>",
+        "location": None,
+        "city": "London",
+        "state": "England",
+        "country": "United Kingdom",
+        "telecommuting": False,
+        "locations": [{"city": "London", "region": "England",
+                       "country": "United Kingdom", "hidden": False}],
+    }
+    job.update(over)
+    return job
+
+
+def _wk_resp(jobs, name="TestCo"):
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json = MagicMock(return_value={"name": name, "jobs": jobs})
+    return resp
+
+
+def test_workable_reads_the_flat_details_true_location_shape():
+    """THE regression: `location` is null in the real response, so the flat
+    fields and the `locations` array are the only place the facts live."""
+    with patch("httpx.get", return_value=_wk_resp([_wk_job()])):
+        jobs = ats_clients.fetch_workable("TestCo", "testco")
+    assert len(jobs) == 1
+    j = jobs[0]
+    assert j["company"] == "TestCo"
+    assert j["title"] == "Software Engineer"
+    assert j["location"] == "London, England, United Kingdom"
+    assert j["url"] == "https://apply.workable.com/j/ABC123"
+    assert j["posted_at"] == "2026-09-01"
+    assert j["description"] == "<p>Build things</p>"
+    print("fetch_workable: reads the flat details=true location shape — OK")
+
+
+def test_workable_flat_fields_are_used_when_the_locations_array_is_absent():
+    with patch("httpx.get", return_value=_wk_resp([_wk_job(locations=None)])):
+        jobs = ats_clients.fetch_workable("TestCo", "testco")
+    assert jobs[0]["location"] == "London, England, United Kingdom"
+
+
+def test_workable_nested_location_shape_still_works():
+    """The other shape Workable returns, and the ONLY one the old code read — so
+    a fix that broke it would be a straight regression."""
+    job = _wk_job(locations=None, city=None, state=None, country=None,
+                  location={"city": "Calgary", "region": "AB", "country": "Canada"})
+    with patch("httpx.get", return_value=_wk_resp([job])):
+        jobs = ats_clients.fetch_workable("TestCo", "testco")
+    assert jobs[0]["location"] == "Calgary, AB, Canada"
+
+
+def test_workable_nested_remote_workplace_is_still_labelled_remote():
+    job = _wk_job(locations=None, city=None, state=None, country=None,
+                  location={"city": "Calgary", "region": "AB", "country": "Canada",
+                            "workplace": "remote"})
+    with patch("httpx.get", return_value=_wk_resp([job])):
+        jobs = ats_clients.fetch_workable("TestCo", "testco")
+    assert jobs[0]["location"] == "Remote (Calgary, AB, Canada)"
+
+
+def test_workable_telecommuting_is_labelled_remote():
+    """The details=true shape marks remote with a boolean, not `workplace`."""
+    with patch("httpx.get", return_value=_wk_resp([_wk_job(telecommuting=True)])):
+        jobs = ats_clients.fetch_workable("TestCo", "testco")
+    assert jobs[0]["location"] == "Remote (London, England, United Kingdom)"
+
+
+def test_workable_multi_location_joins_and_drops_hidden():
+    """A role open in Berlin AND London has to be able to survive on the London
+    one; a `hidden` entry is not a real location and must not appear."""
+    job = _wk_job(locations=[
+        {"city": "Berlin", "region": "Berlin", "country": "Germany", "hidden": False},
+        {"city": "London", "region": "England", "country": "United Kingdom", "hidden": False},
+        {"city": "Dublin", "region": "Leinster", "country": "Ireland", "hidden": True},
+    ])
+    with patch("httpx.get", return_value=_wk_resp([job])):
+        jobs = ats_clients.fetch_workable("TestCo", "testco")
+    assert jobs[0]["location"] == (
+        "Berlin, Berlin, Germany; London, England, United Kingdom")
+
+
+def test_workable_missing_location_is_empty_not_a_crash():
+    """Empty is the honest answer, and filters.py treats it as "unknown" — what
+    must not happen is an exception that kills the company's whole fetch."""
+    job = _wk_job(locations=None, location=None, city=None, state=None, country=None)
+    with patch("httpx.get", return_value=_wk_resp([job])):
+        jobs = ats_clients.fetch_workable("TestCo", "testco")
+    assert jobs[0]["location"] == ""
+
+
+@pytest.mark.real_filters
+def test_workable_london_role_survives_the_location_filter():
+    """The assertion the bug actually broke. Before the fix this location was ""
+    and location_is_allowed("") is False, so the posting vanished."""
+    from app import filters
+    with patch("httpx.get", return_value=_wk_resp([_wk_job()])):
+        jobs = ats_clients.fetch_workable("TestCo", "testco")
+    assert filters.location_is_allowed(jobs[0]["location"]), (
+        "a London Workable role must survive location_allow_patterns; an empty "
+        "location here means the flat/`locations` shape is being missed again")
+    print("fetch_workable: London role survives the location filter — OK")
+
+
+def test_workable_is_wired_into_fetchers():
+    assert ats_clients.FETCHERS["workable"] is ats_clients.fetch_workable
+    with patch("httpx.get", return_value=_wk_resp([])):
+        assert ats_clients.fetch_company(
+            {"name": "TestCo", "ats": "workable", "slug": "testco"}) == []
