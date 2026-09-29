@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := run
 
-.PHONY: run test test-web test-ui test-ui-headed evaluate web cv-setup cv-selftest cv-inventory cv-status cv-lessons
+.PHONY: run test test-web test-ui test-ui-headed ci dependabot-list dependabot-review dependabot-clean evaluate web cv-setup cv-selftest cv-inventory cv-status cv-lessons
 
 # The CV tailoring pipeline runs its vendored scripts with this interpreter, so
 # the rendering dependencies have to live here rather than only in whatever
@@ -55,6 +55,83 @@ test-ui:
 # down enough to follow.
 test-ui-headed:
 	npm --prefix web run test:ui:headed --silent
+
+# Reproduce CI exactly, locally.
+#
+# The lines below are the CI job steps from .github/workflows/ci.yml, in the same
+# order and against the same venv layout — the workflow recreates this repo's own
+# .venv, which is what VENV/PY above point at. A green `make ci` therefore means a
+# green CI run, and a red one can be debugged here instead of in a runner log.
+#
+# QA_SKIP_DOCKER_TESTS=1 mirrors the workflow, and is why the three container
+# tests are SKIPPED rather than run: they pull python:3.12-alpine and serve a mock
+# upstream over a real socket, which CI avoids to stay fast and offline. So
+# `make ci` does NOT mean "everything ran". `make test` runs those three locally
+# when Docker is up — that is the difference between the two targets.
+ci:
+	QA_SKIP_DOCKER_TESTS=1 $(PY) -m pytest app/ -q
+	$(PY) -m app.tests.test_pipeline
+	$(PY) -m app.tests.test_discover_companies
+	$(PY) -m app.tests.test_ai_evaluate
+	npm --prefix web test --silent
+	npm --prefix web run typecheck --silent
+	npm --prefix web run test:ui --silent
+
+# ---------------------------------------------------------------------------
+# Reviewing a Dependabot PR.
+#
+#   make dependabot-list
+#   make dependabot-review BRANCH=dependabot/pip/pypdf-6.0.0
+#   make dependabot-clean
+#
+# The review runs in a worktree at $(REVIEW_DIR), OUTSIDE this repo, so none of
+# your uncommitted work is touched. That is the whole point of the worktree: a
+# bump rewrites requirements.txt / package-lock.json, and checking the branch out
+# in place would fight whatever you have in flight.
+#
+# It builds a FRESH venv inside the worktree rather than reusing this checkout's.
+# For a pip bump that is the entire point: `pip install -r requirements.txt` has
+# to install the versions the PR proposes, and doing it into .venv would silently
+# rewrite your working environment — which is the opposite of what a review is
+# for. npm gets the same treatment: `npm ci` (not `install`) installs the PR's
+# lockfile exactly, and `--cache` keeps it away from the root-owned ~/.npm cache,
+# which otherwise fails with EPERM on this machine.
+#
+# cv/ is symlinked in so the CV-tailoring suite RUNS instead of skipping under its
+# requires_real_master guard: that suite holds the fpdf2 / python-docx / pypdf
+# tests, i.e. exactly the dependencies most likely to be the bump. Remove the
+# `ln -sfn $(CURDIR)/cv ...` line if you would rather it skipped.
+#
+# Expect roughly 2-4 minutes: a fresh venv, a real npm ci, then the full suite.
+# ---------------------------------------------------------------------------
+REVIEW_DIR ?= /tmp/dependabot-review
+
+dependabot-list:
+	@git fetch -q origin '+refs/heads/dependabot/*:refs/remotes/origin/dependabot/*' 2>/dev/null || true
+	@git branch -r --list 'origin/dependabot/*' | sed 's|^ *origin/||' | grep . || echo "(no Dependabot branches open)"
+
+dependabot-review:
+	@test -n "$(BRANCH)" || { echo "usage: make dependabot-review BRANCH=dependabot/pip/<dep>-<version>"; echo "       make dependabot-list    # to see what is open"; exit 2; }
+	git fetch origin '+refs/heads/dependabot/*:refs/remotes/origin/dependabot/*'
+	@git worktree remove --force $(REVIEW_DIR) 2>/dev/null || true
+	@git worktree prune
+	@rm -rf $(REVIEW_DIR)
+	git worktree add --detach $(REVIEW_DIR) origin/$(BRANCH)
+	python3 -m venv $(REVIEW_DIR)/.venv
+	$(REVIEW_DIR)/.venv/bin/python -m pip install -q -r $(REVIEW_DIR)/requirements.txt
+	ln -sfn $(CURDIR)/cv $(REVIEW_DIR)/cv
+	npm ci --prefix $(REVIEW_DIR)/web --cache $(REVIEW_DIR)/.npm-cache
+	$(MAKE) -C $(REVIEW_DIR) ci
+	@echo
+	@echo "=== $(BRANCH) reviewed in $(REVIEW_DIR) ==="
+	@echo "clean up with: make dependabot-clean"
+
+# Throw the review worktree away. Safe to run when there is nothing to remove.
+dependabot-clean:
+	@git worktree remove --force $(REVIEW_DIR) 2>/dev/null || true
+	@git worktree prune
+	@rm -rf $(REVIEW_DIR)
+	@echo "removed $(REVIEW_DIR)"
 
 # Interactive wrapper around `python -m app.ai_evaluate` — asks the questions
 evaluate:

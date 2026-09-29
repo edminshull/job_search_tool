@@ -15,11 +15,31 @@
 #
 # WHY GROUPS
 # ----------
-# One PR per dependency would mean a dozen open PRs a week, and the whole point
-# of this repo's setup is that every PR gets read and tested locally before it
-# is merged. Grouping minor and patch bumps into a single PR keeps that
-# sustainable. Majors are deliberately NOT grouped: those are the ones that need
-# a human, a changelog read and a real local test run.
+# One PR per dependency would mean a dozen open PRs a day at a daily schedule,
+# and the whole point of this repo's setup is that every PR gets read and tested
+# locally before it is merged. Grouping minor and patch bumps into a single PR
+# keeps that sustainable. Majors are deliberately NOT grouped: those are the ones
+# that need a human, a changelog read and a real local test run.
+#
+# SCHEDULE AND THE PR LIMIT
+# -------------------------
+# Daily at 07:00 Europe/London, as requested. Note `day:` is a WEEKLY-only field
+# (GitHub documents it that way; the JSON schema does not enforce it), so it is
+# deliberately absent from all three blocks below — leaving it in with
+# `interval: daily` would be silently ignored at best.
+#
+# open-pull-requests-limit IS PER ECOSYSTEM, NOT PER REPOSITORY. That is the trap
+# worth knowing: the `5` in each of the three blocks allows up to FIVE OPEN PRS
+# PER ECOSYSTEM, so the real ceiling here is 15, not 5. There is no
+# repository-wide setting to cap the total.
+#
+# In practice the grouping above is what keeps the number low: minor+patch
+# updates collapse into one PR per ecosystem, so a quiet day is ~3 PRs (one per
+# ecosystem) and the limit only binds once several MAJORS are open at once. If a
+# hard ceiling of 5 matters more than per-ecosystem headroom, split the numbers
+# by hand — e.g. pip 3 / npm 1 / github-actions 1 — and accept that whichever
+# ecosystem is capped will simply stop raising new PRs until one is merged or
+# closed.
 version: 2
 
 updates:
@@ -35,8 +55,7 @@ updates:
   - package-ecosystem: pip
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: daily
       time: "07:00"
       timezone: Europe/London
     versioning-strategy: increase
@@ -56,8 +75,7 @@ updates:
   - package-ecosystem: npm
     directory: "/web"
     schedule:
-      interval: weekly
-      day: tuesday
+      interval: daily
       time: "07:00"
       timezone: Europe/London
     open-pull-requests-limit: 5
@@ -75,8 +93,7 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: wednesday
+      interval: daily
       time: "07:00"
       timezone: Europe/London
     open-pull-requests-limit: 5

@@ -29,6 +29,7 @@ pins), so a stand-in master only gets you from 27 red to 9 red.
 To run these, put your master CV at cv/master.yaml.
 """
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -714,10 +715,26 @@ def test_cli_emits_one_json_object_and_nothing_else(tmp_path):
 
 def test_cli_reports_an_error_as_json_with_a_nonzero_exit(tmp_path):
     """A failure must still be machine-readable: the browser shows `error`
-    verbatim, and a traceback on stdout would render as nothing at all."""
+    verbatim, and a traceback on stdout would render as nothing at all.
+
+    The provider is pinned explicitly, and that is load-bearing. The CLI's
+    DEFAULT draft provider is the local model server, so on any machine not
+    running llama-server the preflight fails first with "No local model server on
+    http://127.0.0.1:8080" — and the board-lookup error this test is actually
+    about is never reached. The test then fails for a reason that has nothing to
+    do with what it asserts, which is exactly what it did on every machine that
+    was not the author's.
+
+    The key is a dummy and no model call is made: the URL is not on the board, so
+    the lookup fails before anything is sent. Setting it here rather than relying
+    on .env also means this test no longer depends on whose environment it runs
+    in (load_dotenv does not override what is already in the environment)."""
+    env = {**os.environ,
+           ct.DRAFT_PROVIDER_ENV: "deepseek",
+           "DEEPSEEK_API_KEY": "sk-" + "d" * 40}
     proc = subprocess.run(
         [str(ct.VENV_PY), "-m", "app.cv_tailor", "preview", "--url", "https://not-on-the-board"],
-        cwd=str(ct.ROOT), capture_output=True, text=True, timeout=120)
+        cwd=str(ct.ROOT), capture_output=True, text=True, timeout=120, env=env)
     assert proc.returncode == 1
     payload = json.loads(proc.stdout)
     assert payload["ok"] is False
