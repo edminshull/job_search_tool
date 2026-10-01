@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := run
 
-.PHONY: run test test-web test-ui test-ui-headed ci dependabot-list dependabot-review dependabot-clean evaluate web cv-setup cv-selftest cv-inventory cv-status cv-lessons
+.PHONY: run test test-web test-ui test-ui-headed ci dependabot-list dependabot-review dependabot-clean evaluate web cv-setup cv-selftest cv-inventory cv-status cv-lessons cv-doc cv-scan
 
 # The CV tailoring pipeline runs its vendored scripts with this interpreter, so
 # the rendering dependencies have to live here rather than only in whatever
@@ -50,7 +50,7 @@ test-web:
 test-ui:
 	npm --prefix web run test:ui --silent
 
-# The same ten tests in a real, visible Chrome window — for watching a journey
+# The same 21 tests in a real, visible Chrome window — for watching a journey
 # happen, or demoing it. QA_SLOWMO=300 make test-ui-headed slows each action
 # down enough to follow.
 test-ui-headed:
@@ -155,14 +155,14 @@ web:
 # --- CV tailoring -----------------------------------------------------------
 
 # One-time (and after any requirements.txt change): create the venv the CV
-# pipeline runs in. Without it the Tailor CV button fails with an instruction to
+# pipeline runs in. Without it `preview`/`render` fails with an instruction to
 # run this, rather than an ImportError from three frames deep.
 cv-setup:
 	python3 -m venv $(VENV)
 	$(PY) -m pip install --upgrade pip
 	$(PY) -m pip install -r requirements.txt
 
-# The vendored engine's own test suite: 198 checks on the tailoring pipeline,
+# The vendored engine's own test suite: 202 checks on the tailoring pipeline,
 # including that it hard-fails on a fabricated skill. Run after touching
 # anything under scripts/ — the fabrication guard is the reason the output can
 # be trusted, so it is worth knowing it still works.
@@ -182,6 +182,32 @@ cv-inventory:
 # What cv/master.yaml currently holds, and whether it is still placeholder data.
 cv-status:
 	$(PY) -m app.cv_tailor master-status
+
+# Check the master CV Google Doc is reachable, and say which copy of it a scan
+# would read. The one command to reach for when the Scan CV button reports that
+# it could not read the CV: it distinguishes "the key is not shared with the
+# Doc" from "the Doc id is wrong" from "the network is down", and Google reports
+# the first two identically.
+cv-doc:
+	@$(PY) -m app.cv_tailor master-doc $(ARGS)
+
+# ATS-scan the master CV against one posting, from the command line:
+#
+#   make cv-scan URL='https://jobs.ashbyhq.com/lendable/10178808-...'
+#
+# Free and deterministic — no model call, and no network call at all while the
+# cached copy of the Doc is fresh — so it is also the thing to run when the
+# panel's verdict looks wrong and you want the raw JSON. Add
+# ARGS='--refresh-master' to re-read the Doc rather than the cached copy.
+#
+# The recipes below are silent (`@`) because both commands emit a single JSON
+# object for a caller to parse: make's default echo would put the command line
+# in front of it, so `make cv-scan URL=... | jq .ats.verdict` would fail on the
+# first line.
+cv-scan:
+	@test -n "$(URL)" || { echo "usage: make cv-scan URL='<posting url>'"; \
+	                       echo "       (the url is the one the board stores, shown in the detail panel)"; exit 2; }
+	@$(PY) -m app.cv_tailor scan --url "$(URL)" $(ARGS)
 
 # What the local drafter has been TAUGHT from its own proven mistakes: the
 # failure modes counted so far, how often, and which have recurred enough to be

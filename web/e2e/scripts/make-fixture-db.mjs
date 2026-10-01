@@ -40,9 +40,9 @@
  *                                                   dropping down the board
  *   Boundary Analytics SDET                         posted EXACTLY 30 days ago
  *                                                   (the window's closed edge)
- *   Fresh Start Ltd   Automation Test Engineer      never AI-scored; never
- *                                                   tailored — the job the
- *                                                   tailoring journey starts on
+ *   Fresh Start Ltd   Automation Test Engineer      never AI-scored; NO stored
+ *                                                   CV scan — the job the scan
+ *                                                   journey starts from idle on
  *   Ghost Files Ltd   Senior QA Engineer            record says "rendered" but
  *                                                   the PDF is NOT on disk
  *   Draft Partners    QA Engineer                   has a STORED draft with the
@@ -56,7 +56,15 @@
  *   Antique Systems   QA Engineer                   posted 200 days ago, never
  *                                                   re-listed: also hidden
  *
- * Totals with the default 30-day window: 12 stored, 10 visible, 2 hidden.
+ * Totals under the DEFAULT date window, which is "All dates": 14 stored, all 14
+ * shown, 0 hidden (see web/lib/dates.ts's DEFAULT_DATE_WINDOW — the window is now
+ * an opt-in filter, so the 31-day and 200-day rows start VISIBLE and the boundary
+ * test narrows to "Last month" to exercise the closed edge).
+ *
+ * Three rows also carry a stored ATS scan (SCANS below): Northwind passes,
+ * Bluepeak fails, Coastal is inconclusive because its stored text is a snippet.
+ * The rest have none, so both the "Open CV scan" and the "Scan CV for this job"
+ * states of the detail panel exist on the fixture board.
  *
  * A deliberate mix of date FORMATS is used (ISO with Z, a local datetime string,
  * a relative phrase, and epoch millis) because app/lib/dates.ts exists precisely
@@ -148,9 +156,223 @@ const JAVA_JD_HTML =
   "for API coverage</li><li>Jenkins pipelines, Docker</li></ul>" +
   "<p>Hybrid working: two days per week in the London office.</p>";
 
+// The three urls that carry a stored scan, named rather than repeated: the scan
+// payload below names the posting it belongs to, and a payload whose `url`
+// disagreed with the row it is seeded against would be a fixture that lies about
+// its own subject.
+const NORTHWIND_URL = "https://fixtures.test/jobs/northwind-senior-test-automation";
+const BLUEPEAK_URL = "https://fixtures.test/jobs/bluepeak-qa-automation";
+const COASTAL_URL = "https://fixtures.test/jobs/coastal-test-analyst";
+
+// ---------------------------------------------------------------------------
+// The stored ATS scans (cv_scans)
+// ---------------------------------------------------------------------------
+//
+// WHAT THESE ARE MODELLED ON, EXACTLY
+// -----------------------------------
+// `cv_scans` is written by app/cv_tailor.scan_posting via dedup.save_scan, and
+// read by web/lib/db.ts's getScan() — the summary columns join onto every board
+// row as the `cv_ats_*` fields, and the whole JSON payload is read only when the
+// scan panel is open. So a fixture scan is two things at once, and the shapes
+// here mirror BOTH ends:
+//
+//   * the `scan` payload is what app/ats_scan.scan() returns (`ats`, plus
+//     `suggestions`, `unclosable`, `roles_missing_from_cv`, `projection` and
+//     `cv_source`). Every field the panel reads is present, so a missing field
+//     cannot masquerade as a fixture bug;
+//   * the summary columns are DERIVED from that payload by `scanRow` below,
+//     exactly the way _store_scan derives them. Typing them twice would let the
+//     board chip and the open panel assert different things about one scan.
+//
+// The three scans exist to cover the three verdict bands the UI must never
+// conflate: a pass, a fail, and the "cannot tell" that must NEVER be rendered as
+// a green tick (see CvScanPanel's docstring).
+
+/** One posting term, in the shape app/ats_scan._term_row emits. */
+const term = (name, weight = 3.0, section = "requirements", skill = true) =>
+  ({term: name, weight, section, skill});
+
+/** The CV text every fixture scan was taken against — the Google Doc copy. */
+const CV_SOURCE = {
+  kind: "service_account",
+  cached_from: null,
+  doc_id: "1AbC-fixture-master-cv",
+  fetched_at: localMidnightDaysAgo(0),
+  stale: false,
+  age_hours: 4,
+  reason: null,
+  chars: 6180,
+};
+
+/** Northwind: a PASS. No hard gaps, and no suggestion to make, so the panel
+ *  shows the verdict, the coverage figure and nothing to act on. */
+const NORTHWIND_SCAN = {
+  url: NORTHWIND_URL,
+  company: "Northwind Digital",
+  title: "Senior Test Automation Engineer",
+  cv_source: CV_SOURCE,
+  ats: {
+    verdict: "pass",
+    reason: "Every requirement-level hard skill is covered and priority-term coverage is 88%.",
+    reliable: true,
+    unreliable_reason: null,
+    sections_found: ["duties", "requirements"],
+    terms_found: 41,
+    posting_chars: 4120,
+    priority_coverage: 88.0,
+    priority_evidenced: 22,
+    priority_total: 25,
+    all_term_coverage: 76.5,
+    thresholds: {pass_coverage: 85.0},
+    hard_gaps: [],
+    // Three priority terms the CV's own wording does not carry. They are NOT
+    // hard gaps (they are duties-level or below the weight floor), which is the
+    // distinction the pass band rests on.
+    priority_gaps: [term("Kotlin", 2.0, "duties", true), term("Maven", 1.5, "duties", true),
+                    term("mentoring", 2.0, "duties", false)],
+    evidenced_priorities: [
+      term("Java"), term("JUnit"), term("Cucumber"), term("Jenkins"), term("Docker"),
+    ],
+  },
+  suggestions: [],
+  unclosable: [],
+  roles_missing_from_cv: [],
+  projection: {
+    coverage: 88.0, verdict: null, closes_terms: [], still_open: [],
+    note: "No master experience would close any of this posting's gaps.",
+  },
+};
+
+/** Bluepeak: a FAIL. Two requirement-level hard skills the CV never names, one
+ *  of which the master cannot evidence either — so it is BOTH a hard gap and
+ *  unclosable, which is the real shape of a fail and the reason the "Not
+ *  closable" list and the hard-gap chips are different lists. */
+const BLUEPEAK_SCAN = {
+  url: BLUEPEAK_URL,
+  company: "Bluepeak Software",
+  title: "QA Automation Engineer",
+  // The stale-cache branch of the source line: read from a stored copy because
+  // the live fetch failed. Which copy was read is part of what the verdict means.
+  cv_source: {
+    ...CV_SOURCE,
+    kind: "cache",
+    cached_from: "service_account",
+    fetched_at: localMidnightDaysAgo(2),
+    stale: true,
+    age_hours: 51,
+    reason: "the Docs API request timed out",
+  },
+  ats: {
+    verdict: "fail",
+    reason: "2 requirement-level hard skills the CV does not mention: Node.js, Playwright.",
+    reliable: true,
+    unreliable_reason: null,
+    sections_found: ["requirements"],
+    terms_found: 19,
+    posting_chars: 1240,
+    priority_coverage: 54.5,
+    priority_evidenced: 6,
+    priority_total: 11,
+    all_term_coverage: 42.1,
+    thresholds: {pass_coverage: 85.0},
+    hard_gaps: [term("Node.js"), term("Playwright")],
+    priority_gaps: [term("Node.js"), term("Playwright"), term("CI/CD", 2.0, "duties", false)],
+    evidenced_priorities: [term("JavaScript"), term("test automation", 3.0, "requirements", false)],
+  },
+  suggestions: [
+    {
+      kind: "add_achievement",
+      on_cv_overlap: 0.1,
+      role_id: "fintech",
+      role_title: "Senior QA Engineer",
+      company: "Example FinTech Ltd",
+      achievement_id: "fintech-7",
+      // Verbatim from cv/master.yaml — a suggestion is never written by a model.
+      text: "Built the Node.js contract-test harness that the payments team still runs "
+          + "against every release candidate.",
+      tags: ["node", "contract testing", "api"],
+      closes_terms: [term("Node.js")],
+      closes_count: 1,
+      weight_closed: 3.0,
+    },
+  ],
+  // Asked for by the posting and evidenced nowhere in the master: no edit to the
+  // CV would honestly fix it, which is what makes it worth an interview answer.
+  unclosable: [term("Playwright")],
+  roles_missing_from_cv: [],
+  projection: {
+    coverage: 63.6,
+    verdict: "fail",
+    closes_terms: ["Node.js"],
+    still_open: [term("Playwright")],
+    note: "If every suggestion above were added to the CV.",
+  },
+};
+
+/** Coastal: UNKNOWN, because the stored description is a 52-character snippet
+ *  rather than the advert (app/ats_scan.SNIPPET_CHARS is 1000). The reason text
+ *  is the pipeline's own, verbatim — the panel reads it straight out, and a
+ *  fixture paraphrase would let a regression in that copy pass unnoticed. */
+const COASTAL_SCAN = {
+  url: COASTAL_URL,
+  company: "Coastal Systems",
+  title: "Test Analyst",
+  cv_source: CV_SOURCE,
+  ats: {
+    verdict: "unknown",
+    reason: "The stored description is a search-result snippet rather than the advert, "
+          + "so there is not enough of the posting to judge anything against. This is "
+          + "NOT a pass and NOT a fail. Scanning the employer's own copy of this job, "
+          + "if the board has one, is the fix.",
+    reliable: false,
+    unreliable_reason: "snippet",
+    sections_found: [],
+    terms_found: 3,
+    posting_chars: 52,
+    priority_coverage: 100.0,
+    priority_evidenced: 0,
+    priority_total: 0,
+    all_term_coverage: 0.0,
+    thresholds: {pass_coverage: 85.0},
+    hard_gaps: [],
+    priority_gaps: [],
+    evidenced_priorities: [],
+  },
+  suggestions: [],
+  unclosable: [],
+  roles_missing_from_cv: [],
+  projection: {
+    coverage: 100.0, verdict: null, closes_terms: [], still_open: [],
+    note: "No master experience would close any of this posting's gaps.",
+  },
+  // No duplicate cluster in the fixture, so the pipeline would find no fuller
+  // copy to offer. The panel's better_source button is covered by the spec's
+  // stubbed scan instead, where the Experis re-advert pair supplies one.
+  better_source: null,
+};
+
+/**
+ * The `cv_scans` row for one payload, derived the way cv_tailor._store_scan
+ * derives it.
+ */
+function scanRow(result) {
+  return {
+    verdict: result.ats.verdict,
+    coverage: result.ats.priority_coverage,
+    projected_coverage: result.projection.coverage,
+    hard_gaps: result.ats.hard_gaps.length,
+    suggestion_count: result.suggestions.length,
+    cv_source: result.cv_source.kind,
+    cv_fetched_at: result.cv_source.fetched_at,
+    cv_stale: result.cv_source.stale ? 1 : 0,
+    scan: JSON.stringify(result),
+    error: null,
+  };
+}
+
 const JOBS = [
   {
-    url: "https://fixtures.test/jobs/northwind-senior-test-automation",
+    url: NORTHWIND_URL,
     company: "Northwind Digital",
     title: "Senior Test Automation Engineer",
     location: "London (hybrid)",
@@ -180,9 +402,66 @@ const JOBS = [
     risk_factors: "Contract role; confirm the day rate is outside IR35 in writing.",
     my_status: null,
     notes: null,
+    // A PASS verdict, so the board carries at least one row whose chip says
+    // "CV would pass" and whose panel reopens straight into the result.
+    scan: scanRow(NORTHWIND_SCAN),
+  },
+  // --- the same job advertised twice ---------------------------------------
+  // The pair that prompted app/duplicates.py, reproduced exactly: an agency
+  // re-advertises the contract it is still filling, under a new advert id, with
+  // the title shortened and the office address moved. Both dedup keys miss it —
+  // the URL differs and so does company::title::location.
+  {
+    url: "https://fixtures.test/jobs/experis-ai-automation-tester-x2",
+    company: "Experis",
+    title: "AI Automation Tester X2",
+    location: "Farringdon, Central London",
+    posted_at: isoDaysAgo(16),
+    description: "AI Automation Test Engineer (Contract)\n\n12-month initial " +
+                 "contract, £400-£600 per day (Inside IR35). Java and Cucumber.\n",
+    source: "adzuna",
+    employment_type: "contract",
+    ir35_status: "inside",
+    language_tier: "priority",
+    language_rank: 3,
+    language_hits: "java",
+    clearance_status: "none",
+    // Above Coastal's 60 on purpose: the board spec uses Coastal as its
+    // lowest-score row, and a fixture job with a lower score would silently
+    // take its place in the ascending sort.
+    match_score: 66,
+    recommendation: "consider",
+    my_status: "applied",
+    notes: "Applied via the agency portal.",
+    duplicate_of: null,
+    status_inherited_from: null,
   },
   {
-    url: "https://fixtures.test/jobs/bluepeak-qa-automation",
+    url: "https://fixtures.test/jobs/experis-ai-automation-tester",
+    company: "Experis",
+    title: "AI Automation Tester",
+    location: "Fleet Street, Central London",
+    posted_at: isoDaysAgo(12),
+    description: "AI Automation Tester\n\nJava, Cucumber, performance testing.\n",
+    source: "adzuna",
+    employment_type: "contract",
+    ir35_status: "inside",
+    language_tier: "priority",
+    language_rank: 3,
+    language_hits: "java",
+    clearance_status: "none",
+    match_score: 72,
+    recommendation: "consider",
+    // Inherited, not chosen: app/duplicates.py copied it from the older advert
+    // because the two are the same job. The UI must SAY so rather than present a
+    // derived value as the user's own decision.
+    my_status: "applied",
+    status_inherited_from: "https://fixtures.test/jobs/experis-ai-automation-tester-x2",
+    notes: null,
+    duplicate_of: "https://fixtures.test/jobs/experis-ai-automation-tester-x2",
+  },
+  {
+    url: BLUEPEAK_URL,
     company: "Bluepeak Software",
     title: "QA Automation Engineer",
     location: "Manchester, UK",
@@ -208,9 +487,11 @@ const JOBS = [
     // invalid-status test both have a stable subject.
     my_status: "applied",
     notes: "Applied via the careers page on Monday.",
+    // A FAIL verdict with a real suggestion and an unclosable gap.
+    scan: scanRow(BLUEPEAK_SCAN),
   },
   {
-    url: "https://fixtures.test/jobs/coastal-test-analyst",
+    url: COASTAL_URL,
     company: "Coastal Systems",
     title: "Test Analyst",
     location: "Leeds, UK",
@@ -230,6 +511,9 @@ const JOBS = [
     risk_factors: "A step away from automation.",
     my_status: null,
     notes: null,
+    // INCONCLUSIVE: the stored text is a 52-character snippet, so the scan says
+    // "cannot tell" rather than inventing a verdict from three terms.
+    scan: scanRow(COASTAL_SCAN),
   },
   {
     url: "https://fixtures.test/jobs/trading-house-automation",
@@ -415,6 +699,13 @@ const JOBS = [
           reason: "Escalated to deepseek, but its draft verified no better "
                   + "(revise vs revise), so the original is shown" },
       ]),
+      // What cv_tailor put back into this draft. Stored rather than left in the
+      // preview payload, because the payload dies with the panel while the CV it
+      // explains is on disk — and a reopened record has to be able to say why the
+      // document carries more than the drafter's own report claims it selected.
+      readded: JSON.stringify([
+        "fintech-2, fintech-3 (re-added to Example FinTech Ltd)",
+      ]),
       master_coverage: 64,
       tailored_coverage: 71,
     },
@@ -522,7 +813,8 @@ CREATE TABLE IF NOT EXISTS job_details (
   day_rate_min REAL, day_rate_max REAL, day_rate_source TEXT, rate_verdict TEXT,
   rate_required REAL, perm_equivalent REAL, rate_reason TEXT,
   language_tier TEXT, language_rank INTEGER, language_hits TEXT,
-  clearance_status TEXT, clearance_evidence TEXT, last_listed_at TEXT
+  clearance_status TEXT, clearance_evidence TEXT, last_listed_at TEXT,
+  duplicate_of TEXT
 );
 CREATE TABLE IF NOT EXISTS seen_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT UNIQUE, company_title_key TEXT,
@@ -535,15 +827,21 @@ CREATE TABLE IF NOT EXISTS ai_evaluations (
 );
 CREATE TABLE IF NOT EXISTS user_status (
   url TEXT PRIMARY KEY, my_status TEXT, notes TEXT,
-  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP, inherited_from TEXT
 );
 CREATE TABLE IF NOT EXISTS cv_tailorings (
   url TEXT PRIMARY KEY, status TEXT, day_dir TEXT, company_slug TEXT,
   tailored_yaml TEXT, report TEXT, interview_prep_md TEXT, outdir TEXT,
   pdf_path TEXT, docx_path TEXT, gap_report_path TEXT, interview_prep_path TEXT,
   draft_model TEXT, verify_model TEXT, verify_verdict TEXT, verify_notes TEXT,
-  attempts TEXT,
+  attempts TEXT, readded TEXT,
   master_coverage REAL, tailored_coverage REAL, error TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS cv_scans (
+  url TEXT PRIMARY KEY, verdict TEXT, coverage REAL, projected_coverage REAL,
+  hard_gaps INTEGER, suggestion_count INTEGER, cv_source TEXT,
+  cv_fetched_at TEXT, cv_stale INTEGER, scan TEXT, error TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 `;
@@ -552,7 +850,15 @@ const CV_FIELDS = [
   "status", "day_dir", "company_slug", "tailored_yaml", "report", "interview_prep_md",
   "outdir", "pdf_path", "docx_path", "gap_report_path", "interview_prep_path",
   "draft_model", "verify_model", "verify_verdict", "verify_notes", "attempts",
-  "master_coverage", "tailored_coverage", "error",
+  "readded", "master_coverage", "tailored_coverage", "error",
+];
+
+/** The `cv_scans` columns the board's summary `cv_ats_*` fields come from,
+ *  plus the payload — same split as CV_FIELDS above: the small columns are
+ *  joined onto every board row, the JSON is read only when a panel is open. */
+const SCAN_FIELDS = [
+  "verdict", "coverage", "projected_coverage", "hard_gaps", "suggestion_count",
+  "cv_source", "cv_fetched_at", "cv_stale", "scan", "error",
 ];
 
 const JOB_FIELDS = [
@@ -560,7 +866,7 @@ const JOB_FIELDS = [
   "employment_type", "ir35_status", "ir35_evidence", "day_rate_min", "day_rate_max",
   "day_rate_source", "rate_verdict", "rate_required", "perm_equivalent", "rate_reason",
   "language_tier", "language_rank", "language_hits", "clearance_status",
-  "clearance_evidence", "last_listed_at",
+  "clearance_evidence", "last_listed_at", "duplicate_of",
 ];
 
 function normaliseKey(company, title, location) {
@@ -591,10 +897,27 @@ export function buildFixtureDb({ quiet = false } = {}) {
   if (!tailoringColumns.has("attempts")) {
     db.exec("ALTER TABLE cv_tailorings ADD COLUMN attempts TEXT");
   }
+  if (!tailoringColumns.has("readded")) {
+    db.exec("ALTER TABLE cv_tailorings ADD COLUMN readded TEXT");
+  }
+  // Same treatment for the re-advert columns (2026-09-25): a fixture built before
+  // them exists on disk and CREATE TABLE IF NOT EXISTS will not add them.
+  const jobColumns = new Set(
+    db.prepare("PRAGMA table_info(job_details)").all().map((c) => c.name)
+  );
+  if (!jobColumns.has("duplicate_of")) {
+    db.exec("ALTER TABLE job_details ADD COLUMN duplicate_of TEXT");
+  }
+  const statusColumns = new Set(
+    db.prepare("PRAGMA table_info(user_status)").all().map((c) => c.name)
+  );
+  if (!statusColumns.has("inherited_from")) {
+    db.exec("ALTER TABLE user_status ADD COLUMN inherited_from TEXT");
+  }
 
   // Reset IN PLACE. Order matters only for readability; there are no FK
   // constraints declared between these tables.
-  db.exec("DELETE FROM cv_tailorings; DELETE FROM user_status; DELETE FROM ai_evaluations; DELETE FROM job_details; DELETE FROM seen_jobs;");
+  db.exec("DELETE FROM cv_scans; DELETE FROM cv_tailorings; DELETE FROM user_status; DELETE FROM ai_evaluations; DELETE FROM job_details; DELETE FROM seen_jobs;");
 
   const insertJob = db.prepare(
     `INSERT INTO job_details (${JOB_FIELDS.join(", ")}, passed_filters)
@@ -609,11 +932,15 @@ export function buildFixtureDb({ quiet = false } = {}) {
      VALUES (?, ?, ?, ?, ?, ?, 'fixture')`
   );
   const insertStatus = db.prepare(
-    "INSERT OR REPLACE INTO user_status (url, my_status, notes) VALUES (?, ?, ?)"
+    "INSERT OR REPLACE INTO user_status (url, my_status, notes, inherited_from) VALUES (?, ?, ?, ?)"
   );
   const insertCv = db.prepare(
     `INSERT OR REPLACE INTO cv_tailorings (url, ${CV_FIELDS.join(", ")})
      VALUES (?, ${CV_FIELDS.map(() => "?").join(", ")})`
+  );
+  const insertScan = db.prepare(
+    `INSERT OR REPLACE INTO cv_scans (url, ${SCAN_FIELDS.join(", ")})
+     VALUES (?, ${SCAN_FIELDS.map(() => "?").join(", ")})`
   );
 
   const seed = db.transaction(() => {
@@ -627,11 +954,15 @@ export function buildFixtureDb({ quiet = false } = {}) {
         insertEval.run(job.url, job.match_score, job.recommendation,
                        job.genuine_gaps, job.transferable_strengths, job.risk_factors);
       }
-      if (job.my_status || job.notes) {
-        insertStatus.run(job.url, job.my_status ?? null, job.notes ?? null);
+      if (job.my_status || job.notes || job.status_inherited_from) {
+        insertStatus.run(job.url, job.my_status ?? null, job.notes ?? null,
+                         job.status_inherited_from ?? null);
       }
       if (job.cv) {
         insertCv.run(job.url, ...CV_FIELDS.map((f) => (job.cv[f] === undefined ? null : job.cv[f])));
+      }
+      if (job.scan) {
+        insertScan.run(job.url, ...SCAN_FIELDS.map((f) => (job.scan[f] === undefined ? null : job.scan[f])));
       }
     }
   });
@@ -641,12 +972,14 @@ export function buildFixtureDb({ quiet = false } = {}) {
     stored: db.prepare("SELECT COUNT(*) AS n FROM job_details WHERE passed_filters = 1").get().n,
     evaluated: db.prepare("SELECT COUNT(*) AS n FROM ai_evaluations").get().n,
     tailored: db.prepare("SELECT COUNT(*) AS n FROM cv_tailorings").get().n,
+    scanned: db.prepare("SELECT COUNT(*) AS n FROM cv_scans").get().n,
   };
   db.close();
 
   if (!quiet) {
     console.log(`[fixture] ${FIXTURE_DB_PATH} — ${counts.stored} on the board, ` +
-                `${counts.evaluated} evaluated, ${counts.tailored} with CV state`);
+                `${counts.evaluated} evaluated, ${counts.tailored} with CV state, ` +
+                `${counts.scanned} with a stored scan`);
   }
   return { path: FIXTURE_DB_PATH, ...counts };
 }

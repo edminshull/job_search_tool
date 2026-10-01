@@ -32,11 +32,17 @@ test.describe("Job board", () => {
     await expect(rows(page)).toHaveCount(BOARD.visible);
     await expect(page.locator(".count-badge")).toHaveText(`${BOARD.visible} / ${BOARD.total}`);
     // The header says which window is active, so a user cannot mistake a windowed
-    // board for a complete one.
-    // The label is lower-cased in the sentence ("Showing the last month by
-    // default"), and marked up as a <strong> so the active window is scannable.
-    await expect(page.locator("header .subtitle")).toContainText("Showing the last month by default");
-    await expect(page.locator("header .subtitle strong")).toHaveText("last month");
+    // board for a complete one. The DEFAULT is every posting: the recency window
+    // used to be 30 days and hid rows the pipeline had just paid to score (see
+    // lib/dates.ts's DEFAULT_DATE_WINDOW), so "nothing is hidden" is the state
+    // that has to be announced now, and any windowing is the user's own doing.
+    // The active window is marked up as a <strong> so it is scannable.
+    await expect(page.locator("header .subtitle")).toContainText("Showing every posting");
+    await expect(page.locator("header .subtitle strong")).toHaveText("every posting");
+    // Nothing is hidden, so there is nothing to announce and no escape to offer:
+    // a "show all dates" button on a board that is already showing them is a
+    // no-op dressed as a fix.
+    await expect(page.locator(".window-note")).toHaveCount(0);
 
     // --- Type -------------------------------------------------------------
     // CONTRACT is the exact direction and must give exactly the one contract row.
@@ -86,10 +92,11 @@ test.describe("Job board", () => {
     await toolbarSelect(page, "AI status").selectOption("skip");
     await expect(rows(page)).toHaveCount(FILTER_EXPECTATIONS.aiSkip);
 
-    // "Not evaluated" is 4 rows stored, 2 of them hidden by the date window —
-    // the only filter whose visible count differs from its stored count, and so
-    // the one that would expose a filter applied AFTER the window instead of
-    // before it.
+    // "Not evaluated" is 4 rows stored and 4 shown: the two never-scored rows a
+    // 30-day window used to hide (31 and 200 days old) are on this board now, so
+    // the filter's count and the stored count agree. The window is still applied
+    // BEFORE the other filters, which is what the B1 test exercises from the other
+    // direction.
     await toolbarSelect(page, "AI status").selectOption("not_evaluated");
     await expect(rows(page)).toHaveCount(FILTER_EXPECTATIONS.aiNotEvaluated);
     await expect(rows(page).first().locator(".badge")).toHaveText("Not evaluated");
@@ -132,13 +139,13 @@ test.describe("Job board", () => {
     // --- default sort: Score, descending ------------------------------------
     let companies = await columnValues(page, ".company-cell");
     expect(companies[0]).toBe(SORTED_BY_SCORE_DESC.first);
-    // The unscored rows sink, and there are exactly two of them visible. Their
-    // order relative to each other is not contractual, so only the tail count is
-    // asserted — pinning which of the two is last would be asserting SQLite's
-    // tie order, not the board's behaviour.
+    // The unscored rows sink, and there are exactly four of them on a board that
+    // shows every date. Their order relative to each other is not contractual, so
+    // only the tail count is asserted — pinning which of the four is last would be
+    // asserting SQLite's tie order, not the board's behaviour.
     let scoreCells = (await columnValues(page, ".score-cell")).map((s) => s.trim());
-    expect(scoreCells.slice(0, BOARD.visible - 2).every((s) => s !== "—")).toBe(true);
-    expect(scoreCells.slice(BOARD.visible - 2)).toEqual(["—", "—"]);
+    expect(scoreCells.slice(0, BOARD.visible - BOARD.unscored).every((s) => s !== "—")).toBe(true);
+    expect(scoreCells.slice(BOARD.visible - BOARD.unscored)).toEqual(["—", "—", "—", "—"]);
     // The badge marks the active column, so the user can see why the order is
     // what it is.
     await expect(page.locator('th.active-sort')).toHaveText("Score");
@@ -148,25 +155,26 @@ test.describe("Job board", () => {
     await expect(rows(page)).toHaveCount(1);
     await expect(rows(page).first()).toContainText(ROW.northwind);
 
-    // A TITLE-only match. "Engineer" appears in 9 stored titles and in no
-    // company name, and 7 of those are visible (the 31-day and 200-day rows are
-    // outside the window), so this proves the haystack includes the title and
-    // that the window is applied on top of it.
+    // A TITLE-only match. "Engineer" appears in 9 stored titles and in no company
+    // name, and every one of the 9 is on the board under the default window — so
+    // this proves the haystack includes the title. (Under the old 30-day default
+    // it was 7, and the number was really asserting the window.)
     await toolbarSearch(page).fill("Engineer");
-    await expect(rows(page)).toHaveCount(7);
+    await expect(rows(page)).toHaveCount(9);
     const titles = await columnValues(page, ".title-text");
     expect(titles.every((t) => t.includes("Engineer"))).toBe(true);
 
     // Search is case-insensitive, so a title pasted as copied still matches.
     await toolbarSearch(page).fill("engineer");
-    await expect(rows(page)).toHaveCount(7);
+    await expect(rows(page)).toHaveCount(9);
     await toolbarSearch(page).fill("ENGINEER");
-    await expect(rows(page)).toHaveCount(7);
+    await expect(rows(page)).toHaveCount(9);
 
     // A multi-word substring match, which is what a half-remembered title looks
-    // like: 3 rows stored, 2 visible.
+    // like: 3 rows stored. All three are visible now, including the 200-day-old
+    // "Antique Systems / QA Engineer" that the old default hid.
     await toolbarSearch(page).fill("QA Engineer");
-    await expect(rows(page)).toHaveCount(2);
+    await expect(rows(page)).toHaveCount(3);
 
     // A single character still narrows rather than being ignored.
     await toolbarSearch(page).fill("SDET");
@@ -190,10 +198,10 @@ test.describe("Job board", () => {
     // assertion exists to catch.
     const numeric = scores.filter((s) => s !== "—").map(Number);
     expect(numeric).toEqual([...numeric].sort((a, b) => a - b));
-    expect(numeric).toHaveLength(8); // 10 visible rows, 2 of them unscored
+    expect(numeric).toHaveLength(BOARD.visible - BOARD.unscored);
     // The unknowns are all at the END, whichever direction is active. Asserted as
     // an exact tail rather than a "contains", so a dash floating to the top fails.
-    expect(scores.slice(numeric.length)).toEqual(["—", "—"]);
+    expect(scores.slice(numeric.length)).toEqual(["—", "—", "—", "—"]);
 
     // --- sorting: Posted, newest first -------------------------------------
     // Clicking Posted switches column AND picks descending, because an ascending
@@ -223,47 +231,79 @@ test.describe("Job board", () => {
   test("N1 a no-match search shows the empty state, and the date window says when IT is the cause", async ({ page }) => {
     await openBoard(page);
 
+    // The default window hides nothing, so every row is on the board before a
+    // filter is applied. That is what makes the empty states below meaningful:
+    // an empty board can only be the user's own narrowing, never a silent default.
+    await expect(toolbarSelect(page, "Posted within")).toHaveValue("all");
+    await expect(rows(page)).toHaveCount(BOARD.total);
+    await expect(page.locator(".window-note")).toHaveCount(0);
+
     // --- nothing matches the search ----------------------------------------
     await toolbarSearch(page).fill("zzzz-no-such-role");
     await expect(rows(page)).toHaveCount(0);
     await expect(page.locator(".empty-state")).toContainText("Nothing matches the current filter/search.");
     await expect(page.locator(".count-badge")).toHaveText(`0 / ${BOARD.total}`);
-    // Nothing is hidden by the WINDOW here, so the board must not offer the
-    // "show all dates" escape — offering it would imply a fix that does nothing.
+    // Nothing is hidden by the WINDOW here — the window is showing every date —
+    // so the board must not offer the "show all dates" escape: offering it would
+    // imply a fix that does nothing.
     await expect(page.locator(".empty-state")).not.toContainText("hidden by the date window");
     await expect(page.locator(".window-note")).toHaveCount(0);
 
     // --- every match exists but the WINDOW hides it ------------------------
-    // "Applied" is the 10-day-old Bluepeak row, which is stale enough to fall
-    // outside a 7-day window and has no last_listed_at to rescue it. So the board
-    // is empty even though the posting is there — the one case where an empty
-    // board is the window's fault, and the case the escape hatch exists for.
+    // Three rows carry "applied" — Bluepeak (10 days) and both adverts of the
+    // Experis re-advert pair (16 and 12 days) — and every one of them is stale
+    // enough to fall outside a 7-day window with no last_listed_at to rescue it.
+    // So the board is empty even though the postings are there — the one case
+    // where an empty board is the window's fault, and the case the escape hatch
+    // exists for.
     await toolbarSearch(page).fill("");
     await toolbarSelect(page, "My status").selectOption("applied");
     await toolbarSelect(page, "Posted within").selectOption("7");
     await expect(rows(page)).toHaveCount(0);
     const empty = page.locator(".empty-state");
     await expect(empty).toContainText("hidden by the date window");
-    await expect(empty).toContainText("1 posting hidden");
+    await expect(empty).toContainText("3 postings hidden");
 
-    // The offered fix must actually work: one click and the row is back.
+    // The offered fix must actually work: one click and all three are back.
     await empty.locator("button.link-btn").click();
-    await expect(rows(page)).toHaveCount(1);
-    await expect(rows(page).first()).toContainText(ROW.bluepeak);
+    await expect(rows(page)).toHaveCount(3);
+    await expect(rows(page).filter({ hasText: ROW.bluepeak })).toHaveCount(1);
+    await expect(rows(page).filter({ hasText: "AI Automation Tester" })).toHaveCount(2);
     // And the window select reflects the change rather than silently disagreeing
     // with the table.
     await expect(toolbarSelect(page, "Posted within")).toHaveValue("all");
   });
 
-  test("B1 the date window's closed edge: 30 days shows, 31 hides, undated always shows", async ({ page }) => {
+  test("B1 the date window is opt-in: everything shows by default, and 30 shows / 31 hides at its edge", async ({ page }) => {
     await openBoard(page);
 
-    // Default window: 30 days. The window is a DEFAULT, not a limit, so when it
-    // is hiding anything the board must say so and offer the way out. Silently
-    // dropping postings is indistinguishable from having no postings.
+    // --- the DEFAULT: every posting ----------------------------------------
+    // The window is a FILTER, and its default is "All dates" — see lib/dates.ts's
+    // DEFAULT_DATE_WINDOW. It used to be 30 days, which hid rows the pipeline had
+    // just spent money scoring. So both old rows are on the board from the start,
+    // and the select says so rather than the board quietly disagreeing with it.
+    await expect(toolbarSelect(page, "Posted within")).toHaveValue("all");
+    await expect(rows(page)).toHaveCount(BOARD.total);
+    await expect(rows(page).filter({hasText: ROW.justPast})).toHaveCount(1);
+    await expect(rows(page).filter({hasText: ROW.antique})).toHaveCount(1);
+    // The 31-day-old row is not "still listed", so under the old default it would
+    // have been hidden with no chip explaining why. Nothing is hidden now, so
+    // there is no announcement to make.
+    await expect(page.locator(".window-note")).toHaveCount(0);
+
+    // --- narrowing to "Last month" -----------------------------------------
+    // The window still does exactly what it always did; what changed is that the
+    // user has to ask for it.
+    await toolbarSelect(page, "Posted within").selectOption("30");
+    await expect(page.locator("header .subtitle strong")).toHaveText("last month");
+    await expect(page.locator("header .subtitle")).toContainText("Showing the last month");
+
+    // Now that it IS hiding rows, the board must say so and offer the way out.
+    // Silently dropping postings is indistinguishable from having no postings.
     await expect(page.locator(".window-note")).toContainText("Hiding");
-    await expect(page.locator(".window-note")).toContainText(`${BOARD.hiddenByDate} postings older than`);
+    await expect(page.locator(".window-note")).toContainText(`${BOARD.hiddenByLastMonth} postings older than`);
     await expect(page.locator(".window-note")).toContainText("last month");
+    await expect(rows(page)).toHaveCount(BOARD.visibleLastMonth);
 
     // Boundary Analytics is posted EXACTLY 30 days ago and must be VISIBLE: the
     // comparison is `days <= window`, so an off-by-one here silently hides a real
@@ -282,12 +322,13 @@ test.describe("Job board", () => {
       rows(page).filter({ hasText: ROW.legacy }).locator(".date-cell")
     ).toContainText("no date");
 
-    // Tightening the window to 7 days hides the 30-day row and the 8/10/20-day
-    // rows, and the count in the note must track it.
+    // Tightening the window to 7 days hides the 30-day row, the 8/10/20-day rows
+    // and both adverts of the 16/12-day re-advert pair. Six rows stay inside the
+    // week, so the note must say that 8 of the 14 are older than it.
     await toolbarSelect(page, "Posted within").selectOption("7");
     await expect(rows(page).filter({ hasText: ROW.boundary })).toHaveCount(0);
     await expect(rows(page)).toHaveCount(6);
-    await expect(page.locator(".window-note")).toContainText("6 postings older than");
+    await expect(page.locator(".window-note")).toContainText("8 postings older than");
 
     // "Show all dates" is the one-click way out, and must reveal both hidden rows
     // plus everything the tighter window hid.
@@ -295,15 +336,23 @@ test.describe("Job board", () => {
     await expect(rows(page)).toHaveCount(BOARD.total);
     await expect(rows(page).filter({ hasText: ROW.justPast })).toHaveCount(1);
     await expect(rows(page).filter({ hasText: ROW.antique })).toHaveCount(1);
-    // Nothing is hidden, so the note and the announcement both disappear.
+    // Nothing is hidden, so the note and the announcement both disappear — and the
+    // select agrees with the table rather than silently disagreeing with it.
     await expect(page.locator(".window-note")).toHaveCount(0);
-    await expect(page.locator("header .subtitle")).not.toContainText("Showing the");
-
-    // A wider window is sticky across a Refresh — the toolbar is user state, not
-    // something a data reload should reset.
-    await page.locator(".toolbar button", { hasText: "Refresh" }).click();
-    await expect(rows(page)).toHaveCount(BOARD.total);
+    await expect(page.locator("header .subtitle")).toContainText("Showing every posting");
     await expect(toolbarSelect(page, "Posted within")).toHaveValue("all");
+
+    // A narrower window is sticky across a Refresh — the toolbar is user state,
+    // not something a data reload should reset. This is the assertion that would
+    // catch a Refresh quietly restoring the default: under the old default it
+    // proved the window survived at "all", and it now proves the opposite, which
+    // is the direction that actually matters.
+    await toolbarSelect(page, "Posted within").selectOption("7");
+    await expect(rows(page)).toHaveCount(6);
+    await page.locator(".toolbar button", { hasText: "Refresh" }).click();
+    await expect(rows(page)).toHaveCount(6);
+    await expect(toolbarSelect(page, "Posted within")).toHaveValue("7");
+    await expect(page.locator(".window-note")).toContainText("8 postings older than");
   });
 
   test("B2 a stale posting that is still listed stays visible, and says so", async ({ page }) => {

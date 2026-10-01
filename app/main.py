@@ -32,6 +32,7 @@ from app import ats_clients
 from app import contract_rates
 from app import dedup
 from app import discover_companies
+from app import duplicates
 from app import filters
 load_dotenv()
 OUTPUT_CSV = Path("data/candidates.csv")
@@ -51,6 +52,11 @@ def process_jobs(jobs: list[dict], conn) -> list[dict]:
     while the description is still queryable later."""
     kept = []
     refreshed = 0
+    # Built once for the whole batch, then extended as rows are stored: this
+    # repo's store holds ~17k rows and the pipeline saves hundreds per run, so a
+    # scan per job would be tens of millions of row reads. See app/duplicates.py
+    # for what counts as a duplicate and what inheriting a status means.
+    dup_index = duplicates.DuplicateIndex.from_db(conn)
     for job in jobs:
         # Stamp freshness for EVERY job a fetch returned, new or not: this is
         # what tells the board a posting is still advertised. Done before the
@@ -74,7 +80,15 @@ def process_jobs(jobs: list[dict], conn) -> list[dict]:
         contract_rates.apply_to_job(job)
         job.update(filters.screening_signals(job))
         passed = filters.passes_filters(job)
+        # Is this a re-advert of a job already stored? Flagged before the save so
+        # the link is written with the row, not as a second UPDATE that a failure
+        # could lose. The status inheritance that follows is what stops a repost
+        # of a job you already applied to arriving as fresh work.
+        original = duplicates.detect(job, dup_index)
         dedup.save_details(conn, job, passed)
+        dup_index.add(duplicates.index_row(job))
+        if original is not None:
+            duplicates.inherit_status(conn, job["url"])
         if passed:
             kept.append(job)
         else:

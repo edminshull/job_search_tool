@@ -1,11 +1,11 @@
 "use client";
 
 import {useEffect, useMemo, useState} from "react";
-import {DatedJob, Job, SaveState, SortKey, StoredTailoring} from "@/app/types";
+import {DatedJob, Job, SaveState, ScanPayload, SortKey} from "@/app/types";
 import Toolbar from "@/app/components/Toolbar";
 import JobsTable from "@/app/components/JobsTable";
 import JobDetailPanel from "@/app/components/JobDetailPanel";
-import TailoringPreview from "@/app/components/TailoringPreview";
+import CvScanPanel from "@/app/components/CvScanPanel";
 import {DATE_WINDOWS, DEFAULT_DATE_WINDOW, postedAge, windowDays, withinWindow} from "@/lib/dates";
 
 function sortValue(j: DatedJob, key: SortKey): number | string | null {
@@ -60,13 +60,17 @@ export default function Page() {
   const [draftNotes, setDraftNotes] = useState("");
   const [saveState, setSaveState] = useState<SaveState>("idle");
 
-  // The tailoring overlay. Kept at page level, keyed by the job's URL rather
-  // than by the panel, because a drafted CV belongs to the posting: closing the
-  // detail panel must not throw away a 90-second draft, and reopening the job
-  // should show the same draft back.
-  const [tailorUrl, setTailorUrl] = useState<string | null>(null);
-  const [storedTailoring, setStoredTailoring] = useState<StoredTailoring | null>(null);
-  const [tailoringLoaded, setTailoringLoaded] = useState(false);
+  // The CV-scan overlay. Kept at page level, keyed by the job's URL rather than
+  // by the panel, for the same reason the tailoring overlay was: a scan belongs
+  // to the posting, so closing the detail panel must not throw it away and
+  // reopening the job should show the same result back.
+  const [scanUrl, setScanUrl] = useState<string | null>(null);
+  const [storedScan, setStoredScan] = useState<ScanPayload | null>(null);
+  const [scanLoaded, setScanLoaded] = useState(false);
+  /** The url a "scan the fuller copy" click asked for that is no longer on the
+   *  board. Kept so the panel can say why nothing happened, instead of a click
+   *  that silently does nothing. */
+  const [switchError, setSwitchError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -86,27 +90,31 @@ export default function Page() {
     load();
   }, []);
 
-  // Fetch the stored tailoring record when the overlay opens. The board's own
-  // payload carries only the summary columns (status, paths, coverage) because
-  // the YAML and the verifier's findings are several KB per job — reading them
-  // for 300+ rows to serve one open panel would be waste.
+  // Fetch the stored scan when the overlay opens. The board's payload carries
+  // only the summary columns (verdict, coverage, counts) because the full result
+  // — gap lists, suggestions, the evidence behind the verdict — is several KB
+  // per job, and reading that for 300+ rows to serve one open panel would be
+  // waste. Opening the overlay must not RUN anything either: a scan is only ever
+  // run when the user asks for one, so reopening a job is instant and a page
+  // load cannot fire a Google Docs fetch per row.
   useEffect(() => {
-    if (!tailorUrl) return;
+    if (!scanUrl) return;
     let cancelled = false;
-    setTailoringLoaded(false);
+    setSwitchError(null);
+    setScanLoaded(false);
     (async () => {
       try {
-        const res = await fetch(`/api/jobs/tailoring?url=${encodeURIComponent(tailorUrl)}`);
+        const res = await fetch(`/api/jobs/scan?url=${encodeURIComponent(scanUrl)}`);
         const data = await res.json();
-        if (!cancelled) setStoredTailoring(res.ok ? data.tailoring : null);
+        if (!cancelled) setStoredScan(res.ok ? data.scan : null);
       } catch {
-        if (!cancelled) setStoredTailoring(null);
+        if (!cancelled) setStoredScan(null);
       } finally {
-        if (!cancelled) setTailoringLoaded(true);
+        if (!cancelled) setScanLoaded(true);
       }
     })();
     return () => { cancelled = true; };
-  }, [tailorUrl]);
+  }, [scanUrl]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -223,8 +231,10 @@ export default function Page() {
         <h1>Job Search Board</h1>
         <div className="subtitle">
           Reads and writes data/seen_jobs.sqlite3 directly — no export/import step.
-          {activeWindow?.days != null && (
-            <> Showing the <strong>{activeWindow.label.toLowerCase()}</strong> by default; widen it in the toolbar.</>
+          {activeWindow?.days == null ? (
+            <> Showing <strong>every posting</strong>; narrow it with &quot;Posted within&quot; in the toolbar.</>
+          ) : (
+            <> Showing the <strong>{activeWindow.label.toLowerCase()}</strong>; widen it in the toolbar.</>
           )}
         </div>
       </header>
@@ -291,36 +301,68 @@ export default function Page() {
           saveState={saveState}
           onSave={() => saveStatus(selected.url, draftStatus, draftNotes, true)}
           onClose={() => setSelectedUrl(null)}
-          onTailorCv={() => setTailorUrl(selected.url)}
+          onScanCv={() => setScanUrl(selected.url)}
+          // Resolved against the loaded board rows, so a notice never offers a
+          // button to a row that is not here: the original advert can have been
+          // filtered out, and the status can have been inherited from a third
+          // advert of the same job (see app/duplicates.py).
+          duplicateOriginal={dated.find((j) => j.url === selected.duplicate_of) ?? null}
+          inheritedSource={dated.find((j) => j.url === selected.status_inherited_from) ?? null}
+          onOpenJob={(job) => setSelectedUrl(job.url)}
         />
       )}
 
-      {tailorUrl && (() => {
+      {scanUrl && (() => {
         // Read the job from `dated` rather than from a snapshot taken when the
-        // overlay opened, so a board refresh mid-draft still shows current data.
-        const job = dated.find((j) => j.url === tailorUrl);
+        // overlay opened, so a board refresh mid-scan still shows current data.
+        const job = dated.find((j) => j.url === scanUrl);
         if (!job) return null;
-        // Wait for the stored record: mounting the overlay before it arrives
-        // would show "never tailored" for a job that already has a CV, and the
-        // first thing the user would see is the wrong state.
-        if (!tailoringLoaded) {
+        // Wait for the stored record: mounting before it arrives would show
+        // "never scanned" for a job that has a scan, and the first thing the
+        // user would see is the wrong state.
+        if (!scanLoaded) {
           return (
             <div id="overlay" className="tailor-overlay"
-                 onClick={(e) => { if (e.target === e.currentTarget) setTailorUrl(null); }}>
+                 onClick={(e) => { if (e.target === e.currentTarget) setScanUrl(null); }}>
               <div id="panel" className="tailor-panel">
                 <div id="panel-body">
-                  <div className="loading-state">Loading the stored CV…</div>
+                  <div className="loading-state">Loading the stored scan…</div>
                 </div>
               </div>
             </div>
           );
         }
         return (
-          <TailoringPreview
+          <CvScanPanel
             job={job}
-            stored={storedTailoring}
-            onClose={() => setTailorUrl(null)}
-            onRendered={load}
+            stored={storedScan}
+            switchError={switchError}
+            onClose={() => { setScanUrl(null); setSwitchError(null); }}
+            onScanned={() => {
+              load();
+              // Refresh the stored row in place, so the footer's "last updated"
+              // agrees with what was just written. Deliberately WITHOUT
+              // dropping `scanLoaded` first: that would unmount this panel for
+              // the length of the request and flash the whole overlay back to
+              // "Loading the stored scan…" immediately after a scan the user
+              // just watched finish. `stored` feeds the footer only — the
+              // result on screen comes from the panel's own state.
+              fetch(`/api/jobs/scan?url=${encodeURIComponent(job.url)}`)
+                .then((r) => (r.ok ? r.json() : null))
+                .then((d) => setStoredScan(d?.scan ?? null))
+                .catch(() => {});
+            }}
+            onSwitchJob={(url) => {
+              // The target comes from a `better_source` link, which the pipeline
+              // only ever records for a row that is on the board — but a STORED
+              // scan keeps naming its sibling long after that sibling has been
+              // filtered out or removed, and the url is then one `dated` cannot
+              // resolve. Setting `scanUrl` to it would render `null` above,
+              // leaving the overlay invisible while the url stayed set — so the
+              // button that opened it would look dead on the next click.
+              if (dated.some((j) => j.url === url)) setScanUrl(url);
+              else setSwitchError(url);
+            }}
           />
         );
       })()}

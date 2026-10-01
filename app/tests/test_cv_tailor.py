@@ -60,6 +60,11 @@ requires_real_master = pytest.mark.skipif(
 
 pytestmark = requires_real_master
 
+# Captured before any fixture monkeypatches it. The preview's gap-report wiring
+# is about WHEN the markdown is read, so the test for it has to use the real
+# reader — a stub would agree with whatever order the code used.
+REAL_READ_REPORT = ct._read_report
+
 
 # --- a stubbed provider ----------------------------------------------------
 class StubProvider:
@@ -450,13 +455,18 @@ def test_a_reworded_bullet_is_labelled_as_the_one_to_check(master_ids):
     assert reworded["text"] == "Widened claim not in the master"
 
 
-def test_a_ref_the_master_does_not_hold_is_passed_on_not_dropped():
+def test_a_ref_the_master_does_not_hold_is_passed_on_not_dropped(master_ids):
     """Reference validity is rule 1. Resolving must not quietly discard the one
-    case the verifier genuinely has to report."""
+    case the verifier genuinely has to report.
+
+    The VALID half of the pair is taken from the real master rather than written
+    out, so the test still hands the resolver a ref it must genuinely resolve —
+    without the file naming which employers are on the author's CV."""
+    roles, achievements = master_ids
     draft = yaml.safe_dump({
         "summary": "x",
-        "experience": [{"ref": "not-a-role", "achievements": [{"ref": "visa-1"}]},
-                       {"ref": "visa-cc", "achievements": [{"ref": "not-an-achievement"}]}],
+        "experience": [{"ref": "not-a-role", "achievements": [{"ref": achievements[0]}]},
+                       {"ref": roles[0], "achievements": [{"ref": "not-an-achievement"}]}],
     }, sort_keys=False)
     resolved = ct.resolve_draft_for_verification(draft)
 
@@ -512,6 +522,77 @@ def test_preflight_skips_the_local_check_when_drafting_in_the_cloud(monkeypatch)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-" + "a" * 40)
     monkeypatch.setenv("CV_VERIFY_PROVIDER", "deepseek")
     assert ct.preflight(need_draft=True) == []
+
+
+def test_the_provider_flag_beats_the_environment_variable(monkeypatch):
+    """`--provider deepseek` in a checkout whose CV_DRAFT_PROVIDER says `local`
+    must not be blocked by a stopped llama-server: the whole reason to pass the
+    flag is to avoid the local model, and checking the environment variable
+    instead refused the run over a server it was never going to call."""
+    monkeypatch.setattr(ct.llm_providers, "check_local_available",
+                        lambda *a, **k: "No local model server on http://127.0.0.1:8080.")
+    monkeypatch.setenv("CV_DRAFT_PROVIDER", "local")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-" + "a" * 40)
+    monkeypatch.setenv("CV_VERIFY_PROVIDER", "deepseek")
+
+    assert ct.preflight(need_draft=True, draft_provider="deepseek") == []
+    assert any("No local model server" in p
+               for p in ct.preflight(need_draft=True, draft_provider="local")), \
+        "an explicit local draft still needs the server, whatever the env says"
+
+
+def test_a_provider_already_built_is_not_rebuilt_or_local_checked(monkeypatch):
+    """The escalation hands over a provider OBJECT. Asking for the local server
+    on its behalf would be wrong (it is not local), and rebuilding it would
+    spend the key lookup twice for a provider that already exists."""
+    checked: list[int] = []
+    monkeypatch.setattr(ct.llm_providers, "check_local_available",
+                        lambda *a, **k: checked.append(1) or "No local model server on 8080.")
+    built: list[str] = []
+    monkeypatch.setattr(ct.llm_providers, "build_provider",
+                        lambda name=None: (built.append(name), _StubProvider(name=name))[1])
+    monkeypatch.setenv("CV_VERIFY_PROVIDER", "deepseek")
+
+    provider = _StubProvider(name="drafter-object")
+    assert ct.preflight(need_draft=True, draft_provider=provider) == []
+    assert checked == [], "a built cloud provider must not trigger the local-server check"
+    assert built == ["deepseek"], \
+        "only the VERIFY half is built; the draft provider arrived ready to use"
+
+
+def test_the_drafting_provider_may_be_named_rather_than_built(monkeypatch, valid_yaml):
+    """THE BUG THIS PINS: the CLI passes the string its `--provider` flag
+    carried, and `provider or build_provider(...)` kept that string, so the
+    first model call died with "AttributeError: 'str' object has no attribute
+    'complete'" after the gap report had already been built."""
+    built: list[str] = []
+    stub = StubProvider(_draft_result(valid_yaml), name="deepseek", model="deepseek-flash")
+    monkeypatch.setattr(ct.llm_providers, "build_provider",
+                        lambda name=None: (built.append(name), stub)[1])
+
+    draft = ct.draft_cv({"company": "CACI", "title": "Senior Test Engineer"},
+                        "posting", "gaps", provider="deepseek")
+
+    assert built == ["deepseek"], "the name must reach build_provider, not .complete()"
+    assert draft["provider"] == "deepseek" and draft["data"]["experience"]
+
+
+def test_an_unknown_provider_name_is_reported_not_raised_at_the_call_site(monkeypatch):
+    """A flag typo has to be a sentence, not an AttributeError three frames deep.
+
+    Two contracts, because the two entry points report differently: preflight
+    COLLECTS problems (the UI shows them as a list and nothing was attempted),
+    while a direct draft call raises for its caller to catch."""
+    monkeypatch.setenv("CV_VERIFY_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-" + "a" * 40)
+
+    problems = ct.preflight(need_draft=True, draft_provider="deep-thought")
+    assert len(problems) == 1 and "deep-thought" in problems[0], problems
+
+    with pytest.raises(ct.llm_providers.ProviderError) as exc:
+        ct.draft_cv({"company": "CACI", "title": "Senior Test Engineer"},
+                    "posting", "gaps", provider="deep-thought")
+    assert "deep-thought" in str(exc.value)
 
 
 # --- layout ----------------------------------------------------------------
@@ -625,6 +706,45 @@ def test_an_existing_database_gains_the_attempts_column(tmp_path):
     with dedup.connect(path) as conn:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(cv_tailorings)")}
     assert "attempts" in cols
+
+
+def test_the_record_says_what_the_code_restored(tmp_path):
+    """`readded` is stored for exactly the reason `attempts` is: without it the
+    document and the drafter's own `report` disagree with nothing on screen to
+    explain why. The RevTech CV carries 19 bullets while its report describes
+    selecting 10, and the panel has to be able to say so days later."""
+    readded = ["fintech-6, fintech-7, fintech-8, fintech-9 (re-added to Example FinTech Ltd)",
+               "Example Consultancy Ltd (role re-added, with every achievement)"]
+    db = tmp_path / "t.db"
+    with dedup.connect(str(db)) as conn:
+        conn.execute("INSERT INTO job_details (url, company, title) VALUES (?, ?, ?)",
+                     ("u1", "RevTech", "SDET"))
+        dedup.save_tailoring(conn, "u1", status="draft", readded=json.dumps(readded))
+
+    # Read back through a NEW connection, which is what the panel does.
+    with dedup.connect(str(db)) as conn:
+        assert json.loads(dedup.get_tailoring(conn, "u1")["readded"]) == readded
+        # A later render rewrites its paths without redrafting, so it must not
+        # clear the explanation for the YAML it is rendering.
+        dedup.save_tailoring(conn, "u1", status="rendered", pdf_path="/x/cv.pdf")
+        assert json.loads(dedup.get_tailoring(conn, "u1")["readded"]) == readded
+
+
+def test_an_existing_database_gains_the_readded_column(tmp_path):
+    """Same migration, same reason, new column: `readded` was added after the
+    real database was created, and CREATE TABLE IF NOT EXISTS cannot add it."""
+    old_schema = re.sub(r"^\s*readded TEXT,.*$", "", dedup.SCHEMA, flags=re.M)
+    assert "readded" not in old_schema, "the fixture did not actually strip the column"
+
+    path = str(tmp_path / "old.db")
+    old = sqlite3.connect(path)
+    old.executescript(old_schema)
+    old.commit()
+    old.close()
+
+    with dedup.connect(path) as conn:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(cv_tailorings)")}
+    assert "readded" in cols
 
 
 def test_tailoring_record_round_trips(tmp_path):
@@ -942,7 +1062,7 @@ def test_a_none_field_with_an_explanation_is_not_a_failure():
 
     # A field that OPENS with a finding still counts, however it continues.
     assert ct.proven_failure_modes(
-        {**GOOD, "unsupported_refs": "visa-99 is not an id in the master."}) == ["unsupported_ref"]
+        {**GOOD, "unsupported_refs": "fintech-99 is not an id in the master."}) == ["unsupported_ref"]
 
 
 @pytest.mark.parametrize("value", ["none", "none.", "None", "none!", "n/a", "no", "nothing",
@@ -955,7 +1075,7 @@ def test_the_none_marker_is_recognised_as_a_complete_answer(value):
     "No Azure DevOps claim was made, but the draft invented a metric.",
     "None of the refs are valid.",
     "Nothing was invented, however the summary overstates the domain.",
-    "reworded visa-6 into a claim the master does not support",
+    "reworded fintech-6 into a claim the master does not support",
 ])
 def test_ordinary_english_is_not_swallowed_as_the_none_marker(value):
     """The tightness that makes the rule safe. A bare "no" is ordinary English, so
@@ -1052,7 +1172,7 @@ def test_recording_a_proven_failure_counts_every_mode_it_exhibited(tmp_path):
     otherwise a drafter that reliably invents numbers AND invents refs would only
     ever be taught whichever mode happened to be listed first."""
     both = {**GOOD,
-            "unsupported_refs": "visa-99 is not in the master",
+            "unsupported_refs": "fintech-99 is not in the master",
             "invented_metrics": "Claims 'a team of twelve'."}
     with dedup.connect(str(tmp_path / "t.db")) as conn:
         assert ct.record_proven_failures(conn, both) == ["unsupported_ref", "invented_metric"]
@@ -1109,7 +1229,8 @@ def stubbed_preview(monkeypatch, tmp_path):
     def fake_draft(job, posting, gap_report, provider=None, feedback=None, lessons=None, **k):
         prompts.append(list(lessons or []))
         return {"data": {}, "report": "r", "provider": getattr(provider, "name", "local"),
-                "model": "qwen", "yaml_text": "summary: s\nexperience:\n  - ref: visa-cc\n"}
+                "model": "qwen", "yaml_text": "summary: s\nexperience:\n  - ref: fintech-co\n",
+                "readded": ["fintech-6 (re-added to Example FinTech Ltd)"]}
 
     monkeypatch.setattr(ct, "draft_cv", fake_draft)
     monkeypatch.setattr(ct, "verify_cv",
@@ -1149,6 +1270,34 @@ def test_the_lesson_loop_closes_across_runs(stubbed_preview):
     assert result["attempts"][-1]["learned"] == ["fabricated_claim"]
 
 
+def test_the_preview_payload_carries_the_gap_markdown(stubbed_preview, monkeypatch):
+    """The web preview panel renders `preview.gap_report`, and it was ALWAYS the
+    empty string: the payload read the file back at return time, by which point
+    the `finally` had already deleted the scratch directory it lived in. The
+    coverage FIGURES survived because they are parsed before the delete, which is
+    what made this look like a UI bug rather than a pipeline one.
+
+    The stub here writes a real file into the scratch dir and the REAL reader
+    reads it, because the defect was one of ordering."""
+    conn, _prompts, verdicts = stubbed_preview
+    verdicts[:] = [GOOD]  # accept on the first draft: no escalation, one verify call
+
+    def write_a_real_file(dest, job, posting, tailored_path=None):
+        path = dest / "gap-report.md"
+        path.write_text("# Keyword & ATS gap report\n\nPriority-term coverage: 100%\n",
+                        encoding="utf-8")
+        return {"path": str(path), "master_coverage": 100.0, "tailored_coverage": 100.0,
+                "priority_gaps": 0}
+
+    monkeypatch.setattr(ct, "write_gap_report", write_a_real_file)
+    monkeypatch.setattr(ct, "_read_report", REAL_READ_REPORT)
+
+    result = ct.preview(conn, "u1")
+
+    assert "Priority-term coverage: 100%" in result["gap_report"], \
+        "the preview must carry the markdown it measured, not an empty string"
+
+
 def test_a_retry_that_verifies_no_better_teaches_nothing(stubbed_preview):
     """THE GATE, and the Savant case exactly: the local draft was flagged, the
     cloud re-draft verified `revise` against `revise`, and the original was kept.
@@ -1177,6 +1326,38 @@ def test_a_clean_draft_is_escalated_never_and_teaches_nothing(stubbed_preview):
     assert len(result["attempts"]) == 1, "an accepted draft must not be escalated"
     assert all(p == [] for p in prompts)
     assert dedup.all_lessons(conn) == []
+
+
+def test_the_preview_reports_and_stores_what_the_code_restored(stubbed_preview):
+    """Reported in the payload AND written to the record, because they answer
+    different questions. The payload explains the draft on screen; the column
+    explains the CV on disk a week later, when the panel is reopened and the
+    payload is long gone — which is precisely the situation that made a restored
+    draft and the model's own `report` look like they contradicted each other."""
+    conn, _prompts, verdicts = stubbed_preview
+    verdicts[:] = [GOOD]
+
+    result = ct.preview(conn, "u1")
+
+    assert result["readded"] == ["fintech-6 (re-added to Example FinTech Ltd)"]
+    assert json.loads(dedup.get_tailoring(conn, "u1")["readded"]) == result["readded"]
+
+
+def test_a_draft_that_needed_no_correction_reports_an_empty_list(stubbed_preview, monkeypatch):
+    """[] rather than None, so the panel can distinguish "this draft needed no
+    correction" from "this record predates the column". They render the same way
+    on purpose, but only one of them is a statement about the draft — and None is
+    what a `dict.get` on a draft_cv shape that predates the key would give."""
+    conn, _prompts, verdicts = stubbed_preview
+    verdicts[:] = [GOOD]
+    monkeypatch.setattr(ct, "draft_cv", lambda *a, **k: {
+        "data": {}, "report": "r", "provider": "local", "model": "qwen",
+        "yaml_text": "summary: s\nexperience:\n  - ref: fintech-co\n"})
+
+    result = ct.preview(conn, "u1")
+
+    assert result["readded"] == []
+    assert json.loads(dedup.get_tailoring(conn, "u1")["readded"]) == []
 
 
 # --- HTML structure preservation for the gap report --------------------------
@@ -1480,7 +1661,7 @@ def test_reserialising_preserves_every_value_the_renderer_needs(master_ids):
     data = ct.parse_drafted_yaml(raw)
     data, readded = ct.merge_required_groups(data, ct.load_master_data())
     assert readded, "this fixture is meant to be missing the required groups"
-    back = yaml.safe_load(ct._reserialise_with_groups(data, raw))
+    back = yaml.safe_load(ct._reserialise_with_required(data, raw))
 
     assert "Reworded, same fact." in back["experience"][0]["achievements"][0]["text"]
     assert [a["ref"] for a in back["experience"][0]["achievements"]] == [first, second]
@@ -1583,3 +1764,493 @@ def test_pinned_items_come_from_the_master_so_they_cannot_be_fabricated():
         assert group_name in by_group, f"{group_name} is not a master skill group"
         for item in items:
             assert item in by_group[group_name], f"{item!r} is not in master group {group_name!r}"
+
+
+def _exp_master(roles):
+    """A master-shaped fixture: {role_id: [achievement ids]} in master order."""
+    return {"experience": [
+        {"id": rid, "company": f"{rid} ltd",
+         "achievements": [{"id": aid, "text": f"{aid} text"} for aid in aids]}
+        for rid, aids in roles.items()
+    ]}
+
+
+def _refs(role_sel):
+    return [a.get("ref") if isinstance(a, dict) else a for a in role_sel["achievements"]]
+
+
+# --- required experience: enforcement, not a request --------------------------
+# Regression, found 2026-09-25 while comparing the RevTech draft with the ones
+# from the 23rd and 24th. Rule 5 told the drafter to "Select AGGRESSIVELY ...
+# Drop roles and bullets that do not serve this application", and the local model
+# did: RevTech kept 10 of the master's 19 achievements, dropping — among others —
+# three of the master's four numbers and its only leadership bullet. Across the
+# first twelve drafts the cloud model kept all 19 in 3 of 3 runs and the local
+# model in only 3 of 9, so this was never a one-off posting's quirk.
+#
+# The fix mirrors REQUIRED_SKILL_GROUPS: the code re-inserts what the drafter left
+# out, and the ORDER it did choose is left exactly alone.
+
+def test_left_out_achievements_are_restored_in_master_order():
+    """The RevTech shape precisely: 1-5 and 10-11 kept, 6-9 dropped. Coming back
+    as 1..11 is the point — restoring four adjacent bullets must reproduce the
+    master's sequence rather than reversing or appending them."""
+    master = _exp_master({"fintech": [f"fintech-{n}" for n in range(1, 12)]})
+    draft = {"summary": "s", "experience": [
+        {"ref": "fintech", "achievements": [{"ref": f"fintech-{n}"} for n in (1, 2, 3, 4, 5, 10, 11)]},
+    ]}
+    out, notes = ct.merge_required_experience(draft, master)
+    assert _refs(out["experience"][0]) == [f"fintech-{n}" for n in range(1, 12)]
+    assert notes, "the correction must be reported rather than passing as the model's judgement"
+
+
+def test_the_drafters_own_order_is_never_reordered():
+    """Order is the tailoring. A draft that leads with fintech-5 has made a
+    deliberate choice about the first bullet — the one that gets read — and
+    master order must not overwrite it."""
+    master = _exp_master({"fintech": ["fintech-1", "fintech-2", "fintech-3"]})
+    draft = {"summary": "s", "experience": [
+        {"ref": "fintech", "achievements": [{"ref": "fintech-3"}, {"ref": "fintech-1"}, {"ref": "fintech-2"}]},
+    ]}
+    out, notes = ct.merge_required_experience(draft, master)
+    assert _refs(out["experience"][0]) == ["fintech-3", "fintech-1", "fintech-2"]
+    assert notes == []
+
+
+def test_a_reworded_bullet_survives_restoration():
+    """A `text:` override is the drafter's tailoring too. Rebuilding the list
+    around a restored bullet must not strip the override sitting next to it."""
+    master = _exp_master({"fintech": ["fintech-1", "fintech-2"]})
+    draft = {"summary": "s", "experience": [
+        {"ref": "fintech", "achievements": [
+            {"ref": "fintech-1", "text": "Reworded into the posting's vocabulary."}]},
+    ]}
+    out, notes = ct.merge_required_experience(draft, master)
+    assert _refs(out["experience"][0]) == ["fintech-1", "fintech-2"]
+    assert out["experience"][0]["achievements"][0]["text"].startswith("Reworded")
+
+
+def test_a_compliant_draft_is_returned_untouched():
+    """Returned unchanged, not merely equal: the caller only re-serialises when
+    something was restored, and re-serialising drops the model's comments. A
+    draft that needed no correction keeps them."""
+    master = _exp_master({"fintech": ["fintech-1", "fintech-2"]})
+    draft = {"summary": "s", "experience": [
+        {"ref": "fintech", "achievements": [{"ref": "fintech-2"}, {"ref": "fintech-1"}]},
+    ]}
+    out, notes = ct.merge_required_experience(draft, master)
+    assert notes == []
+    assert out["experience"] == draft["experience"]
+
+
+def test_an_absent_achievements_key_is_left_alone():
+    """The engine reads ABSENT as 'all of this role's achievements' (model.py,
+    resolved_experience), so there is nothing missing and nothing to write — and
+    writing the list out would bloat a document the prompt asks to keep short."""
+    master = _exp_master({"fintech": ["fintech-1", "fintech-2"]})
+    draft = {"summary": "s", "experience": [{"ref": "fintech"}]}
+    out, notes = ct.merge_required_experience(draft, master)
+    assert notes == []
+    assert "achievements" not in out["experience"][0]
+
+
+def test_a_role_kept_with_no_bullets_is_filled_rather_than_left_empty():
+    """An explicit empty list renders a role as a title with nothing under it —
+    render.py prints an EMPTY ROLES warning for exactly this."""
+    master = _exp_master({"fintech": ["fintech-1", "fintech-2"]})
+    draft = {"summary": "s", "experience": [{"ref": "fintech", "achievements": []}]}
+    out, notes = ct.merge_required_experience(draft, master)
+    assert _refs(out["experience"][0]) == ["fintech-1", "fintech-2"]
+    assert notes
+
+
+def test_a_dropped_role_is_restored_without_an_achievements_key():
+    """Restored roles carry no explicit bullet list: absent already means every
+    achievement, so the role comes back complete without the drafter's having to
+    enumerate it."""
+    master = _exp_master({"fintech": ["fintech-1"], "commerce": ["commerce-1"], "consultancy": ["consultancy-1"]})
+    draft = {"summary": "s", "experience": [{"ref": "fintech", "achievements": [{"ref": "fintech-1"}]}]}
+    out, notes = ct.merge_required_experience(draft, master)
+    assert [r["ref"] for r in out["experience"]] == ["fintech", "commerce", "consultancy"]
+    assert "achievements" not in out["experience"][1]
+    assert len(notes) == 2, "each restored role must be reported"
+
+
+def test_restored_roles_land_at_master_position_not_on_the_end():
+    """Master order is reverse-chronological and is what every CV reads in, so a
+    restored role must not be bolted onto the end where it looks like an
+    afterthought — the same reasoning as merge_required_groups' insertion point."""
+    master = _exp_master({"fintech": ["fintech-1"], "commerce": ["commerce-1"],
+                          "consultancy": ["consultancy-1"], "gradco": ["gradco-1"]})
+    draft = {"summary": "s", "experience": [
+        {"ref": "fintech", "achievements": [{"ref": "fintech-1"}]},
+        {"ref": "gradco", "achievements": [{"ref": "gradco-1"}]},
+    ]}
+    out, notes = ct.merge_required_experience(draft, master)
+    assert [r["ref"] for r in out["experience"]] == ["fintech", "commerce", "consultancy", "gradco"]
+
+
+def test_a_ref_the_master_does_not_hold_is_not_papered_over():
+    """A dangling ref is a FINDING for _validate_against_master and the verifier.
+    Quietly removing or rewriting it here would hide a broken draft behind a
+    code-level correction, which is the one thing this helper must not do."""
+    master = _exp_master({"fintech": ["fintech-1"]})
+    draft = {"summary": "s", "experience": [
+        {"ref": "not-a-role", "achievements": [{"ref": "made-up"}]},
+        {"ref": "fintech", "achievements": [{"ref": "fintech-1"}, {"ref": "made-up"}]},
+    ]}
+    out, notes = ct.merge_required_experience(draft, master)
+    assert out["experience"][0]["ref"] == "not-a-role"
+    assert _refs(out["experience"][1]) == ["fintech-1", "made-up"]
+    assert ct._validate_against_master(out) is not None, "the dangling ref must still fail validation"
+
+
+def test_omitted_experience_is_left_alone_rather_than_invented():
+    """parse_drafted_yaml rejects a document with no experience, so this is the
+    defensive path: an absent section must not be conjured into a full CV."""
+    master = _exp_master({"fintech": ["fintech-1"]})
+    for empty in (None, []):
+        draft = {"summary": "s", "experience": empty}
+        out, notes = ct.merge_required_experience(draft, master)
+        assert notes == []
+        assert out["experience"] == empty
+
+
+def _partial_selection(master: dict) -> dict:
+    """A draft that selects a SUBSET of the master, in the shape RevTech's did.
+
+    Read from the master rather than written out. Both tests below exist to pin
+    that a partial selection is completed before rendering, and their own
+    docstrings insist the ids must be real or the test pins nothing. Deriving
+    them satisfies that and also stops this file from being a copy of the CV:
+    the ids it used to hardcode were the author's actual employers.
+
+    Takes the first two thirds of the first role's bullets and one bullet from
+    each of the others, so there is always something for the merge to restore."""
+    experience = []
+    for index, role in enumerate(master["experience"]):
+        achievements = role.get("achievements") or []
+        if not achievements:
+            continue
+        keep = achievements[:max(1, (len(achievements) * 2) // 3)] if index == 0 else achievements[:1]
+        experience.append({"ref": role["id"], "achievements": [{"ref": a["id"]} for a in keep]})
+    return {"summary": "s", "experience": experience}
+
+
+def test_the_real_master_restores_the_revtech_draft_completely():
+    """Against the live master and a copy of the actual RevTech selection, because
+    the ids are the point: a fixture with invented ids would pass while pinning
+    nothing. This is the draft that prompted the fix."""
+    master = ct.load_master_data()
+    revtech = _partial_selection(master)
+    out, notes = ct.merge_required_experience(revtech, master)
+
+    expected = {r["id"]: [a["id"] for a in r["achievements"]] for r in master["experience"]}
+    assert {r["ref"]: _refs(r) for r in out["experience"]} == expected
+    assert notes, "the nine restored bullets must be reported"
+    assert ct._validate_against_master(out) is None
+
+
+def test_the_real_master_restores_the_bullets_that_carry_its_only_numbers():
+    """The concrete cost of the regression, asserted rather than described. Of the
+    master's four metrics, RevTech's draft kept one; the three it lost are the
+    reason "each bullet is a fact" is the rule and not a preference."""
+    master = ct.load_master_data()
+    numbered = {a["id"] for r in master["experience"] for a in r.get("achievements") or []
+                if a.get("metrics")}
+    out, _ = ct.merge_required_experience(_partial_selection(master), master)
+    restored = {aid for r in out["experience"] for aid in _refs(r)}
+    assert numbered <= restored, "an achievement the master gives a number must not be droppable"
+
+
+def test_the_prompt_tells_the_drafter_that_experience_is_not_his_to_trim():
+    """Prompt prose and enforcement must not drift, in either direction. The
+    drafter was previously TOLD to drop bullets ("Drop roles and bullets that do
+    not serve this application") while the code now restores them — which would
+    make it spend its judgement on a decision that gets overridden and then report
+    selections it did not make."""
+    assert "DO NOT SELECT" in ct.DRAFT_SYSTEM
+    assert "Drop roles and bullets" not in ct.DRAFT_SYSTEM
+    assert "Every role in the master stays" in ct.DRAFT_SYSTEM
+
+
+def test_the_draft_path_restores_experience_and_rewrites_the_yaml_text(master_ids):
+    """The wiring, not just the helper. The drafter returns a YAML STRING, and
+    that string is what is stored, previewed and rendered — so a correction made
+    to the parsed dict is invisible unless draft_cv rebuilds the text."""
+    roles, achievements = master_ids
+    raw = yaml.safe_dump({
+        "summary": "Senior SDET with nine years in FinTech.",
+        "skills": [{"group": "Personal & Prototype Work",
+                    "items": list(ct.REQUIRED_SKILL_ITEMS["Personal & Prototype Work"])},
+                   {"group": "AI-Assisted Engineering", "items": ["Claude Code"]}],
+        "experience": [{"ref": roles[0], "achievements": [{"ref": achievements[0]}]}],
+        "section_order": ["summary", "skills", "experience", "education", "certifications"],
+    }, sort_keys=False)
+    provider = StubProvider(_draft_result(raw))
+    out = ct.draft_cv({"company": "RevTech", "title": "SDET"}, "posting", "gaps",
+                      provider=provider)
+    assert out["readded"], "the correction must be reported"
+
+    # The TEXT is what gets rendered, so the text is what has to carry the fix.
+    written = yaml.safe_load(out["yaml_text"])
+    assert [r["ref"] for r in written["experience"]] == roles
+    assert ct._validate_against_master(written) is None
+
+
+# ---------------------------------------------------------------------------
+# The ATS scan — the flow that replaced per-posting tailoring (2026-10-01)
+# ---------------------------------------------------------------------------
+#
+# app/tests/test_ats_scan.py covers the scan's RULES, offline and against
+# synthetic strings. What is left here is the wiring around them: where the CV
+# text comes from, what gets persisted, and which of the drafting pipeline's
+# guards still apply. Most do not — nothing on this path calls a model — and the
+# one that matters most is the one that could silently take something away.
+
+# Long on purpose: `ats_scan.SNIPPET_CHARS` treats anything under 1,000
+# characters as a search-result teaser and answers "unknown" instead of a
+# verdict, so a short fixture here would quietly test the snippet path in every
+# scan test rather than the one under test.
+SCAN_POSTING = """Senior Quality Engineer
+
+About us
+
+We build payment systems for merchants across Europe, and we care a great deal
+about the quality of what we ship. Our platform is built on microservices and
+processes millions of transactions a day. You will join a quality function that
+owns how testing is done rather than executing a list of cases somebody else
+wrote, and you will work alongside developers, product managers and platform
+engineers from the first day of a project to the last.
+
+Requirements
+
+Essential experience with Java and Cucumber.
+Experience with Kubernetes and continuous integration.
+A track record of building test automation frameworks from scratch.
+
+What you'll be doing
+
+You will build and extend test automation frameworks for our platform.
+You will own the quality of the services your team ships to production.
+You will work with developers to prevent defects rather than find them late.
+
+Nice to have
+
+Experience with performance testing tools would be an advantage.
+Experience in a regulated financial services environment would help, though it
+is not essential and we are happy to teach the domain to the right engineer.
+"""
+
+SCAN_CV = """Ed Minshull
+Senior SDET
+
+CORE SKILLS
+Java, Cucumber, Selenium WebDriver
+
+PROFESSIONAL EXPERIENCE
+- Built BDD test automation frameworks in Java and Cucumber for 5 services.
+"""
+
+
+def _scan_db(tmp_path):
+    """A scratch database with one board row, and a matching master-shaped CV."""
+    db = tmp_path / "scan.sqlite3"
+    with dedup.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO job_details (url, company, title, location, description, "
+            "passed_filters, source) VALUES (?,?,?,?,?,1,'ashby')",
+            ("https://example.test/job/1", "Example Co", "Senior Quality Engineer",
+             "London, UK", SCAN_POSTING),
+        )
+        conn.commit()
+    return str(db)
+
+
+def _stub_cv(monkeypatch, text=SCAN_CV):
+    monkeypatch.setattr(ct.gdoc, "master_cv_text",
+                        lambda **kwargs: {"text": text, "source": "service_account",
+                                          "cached_source": None, "doc_id": "doc-1",
+                                          "fetched_at": "2026-10-01T09:00:00+00:00",
+                                          "stale": False, "age_hours": 0.0,
+                                          "cache_reason": None})
+
+
+@requires_real_master
+def test_a_scan_is_stored_and_the_verdict_survives_a_reopen(tmp_path, monkeypatch):
+    _stub_cv(monkeypatch)
+    db = _scan_db(tmp_path)
+    with dedup.connect(db) as conn:
+        result = ct.scan_posting(conn, "https://example.test/job/1")
+        row = dedup.get_scan(conn, "https://example.test/job/1")
+
+    assert result["ats"]["verdict"] in ("pass", "borderline", "fail", "unknown")
+    assert row["verdict"] == result["ats"]["verdict"]
+    assert row["coverage"] == result["ats"]["priority_coverage"]
+    assert row["hard_gaps"] == len(result["ats"]["hard_gaps"])
+    assert row["suggestion_count"] == len(result["suggestions"])
+    assert row["cv_source"] == "service_account"
+    # The summary columns exist so the BOARD can badge a row without parsing
+    # JSON; the JSON exists so the PANEL can show the evidence. Both, not either.
+    assert json.loads(row["scan"])["ats"]["verdict"] == result["ats"]["verdict"]
+
+
+@requires_real_master
+def test_a_scan_leaves_an_existing_rendered_cv_alone(tmp_path, monkeypatch):
+    """cv_scans is its own table rather than columns on cv_tailorings, and this
+    is the reason. `cv_tailorings.status` answers "is there a usable CV here?",
+    so a scan writing into that column would overwrite `rendered` — silently
+    taking the PDF link away from a job that still has a perfectly good PDF on
+    disk. The scan and the CV are different questions about the same job."""
+    _stub_cv(monkeypatch)
+    db = _scan_db(tmp_path)
+    with dedup.connect(db) as conn:
+        dedup.save_tailoring(conn, "https://example.test/job/1",
+                             status="rendered", pdf_path="/tmp/does-not-need-to-exist.pdf")
+        conn.commit()
+        ct.scan_posting(conn, "https://example.test/job/1")
+        tailoring = dedup.get_tailoring(conn, "https://example.test/job/1")
+
+    assert tailoring["status"] == "rendered"
+    assert tailoring["pdf_path"] == "/tmp/does-not-need-to-exist.pdf"
+
+
+@requires_real_master
+def test_a_scan_needs_no_model_and_so_needs_no_provider_key(tmp_path, monkeypatch):
+    """`preflight` exists to make sure the DRAFTING pipeline can run, and it
+    insists a verify provider is buildable — which means an API key. A scan is
+    keyword arithmetic over two pieces of text. Routing it through preflight
+    would make the free, offline part of the tool require a paid one."""
+    _stub_cv(monkeypatch)
+    monkeypatch.setattr(ct, "preflight",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("the scan must not call preflight")))
+    db = _scan_db(tmp_path)
+    with dedup.connect(db) as conn:
+        assert ct.scan_posting(conn, "https://example.test/job/1")["ats"]["verdict"]
+
+
+@requires_real_master
+def test_a_posting_with_no_usable_text_is_refused_rather_than_scored(tmp_path, monkeypatch):
+    """An empty posting would report every term as a gap and blame the CV for
+    it, which is the opposite of true."""
+    _stub_cv(monkeypatch)
+    db = tmp_path / "empty.sqlite3"
+    with dedup.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO job_details (url, company, title, location, description, "
+            "passed_filters, source) VALUES (?,?,?,?,?,1,'adzuna')",
+            ("https://example.test/job/2", "Example Co", "QA Engineer", "London", ""),
+        )
+        conn.commit()
+        with pytest.raises(ct.TailorError) as exc:
+            ct.scan_posting(conn, "https://example.test/job/2")
+    assert "no usable posting text" in str(exc.value).lower()
+
+
+@requires_real_master
+def test_an_unreadable_master_cv_reaches_the_user_as_a_sentence(tmp_path, monkeypatch):
+    """The Doc failing is the likeliest thing to go wrong in practice — an
+    unshared Doc, a missing key, a dead network — and an unhandled GDocError
+    would surface as a traceback on stderr and nothing at all on stdout."""
+    def failing(**kwargs):
+        raise ct.gdoc.GDocError("HTTP 404: no such document")
+
+    monkeypatch.setattr(ct.gdoc, "master_cv_text", failing)
+    db = _scan_db(tmp_path)
+    with dedup.connect(db) as conn:
+        with pytest.raises(ct.TailorError) as exc:
+            ct.scan_posting(conn, "https://example.test/job/1")
+    assert "404" in str(exc.value)
+
+
+@requires_real_master
+def test_an_unassessable_posting_offers_a_fuller_copy_of_the_same_job(tmp_path, monkeypatch):
+    """The board routinely holds one job twice — the employer's own advert and
+    an aggregator's 500-character teaser — and app/duplicates.py has already
+    linked them. Naming the better copy is the difference between "cannot
+    assess" and a dead end."""
+    thin = "Lendable London, London 47,204 per year - estimated Full time CLOSING SOON"
+    _stub_cv(monkeypatch)
+    db = tmp_path / "dupes.sqlite3"
+    with dedup.connect(str(db)) as conn:
+        conn.execute(
+            "INSERT INTO job_details (url, company, title, location, description, "
+            "passed_filters, source) VALUES (?,?,?,?,?,1,'adzuna')",
+            ("https://example.test/thin", "Example Co", "Senior Quality Engineer",
+             "London", thin),
+        )
+        conn.execute(
+            "INSERT INTO job_details (url, company, title, location, description, "
+            "passed_filters, source, duplicate_of) VALUES (?,?,?,?,?,1,'ashby',?)",
+            ("https://example.test/full", "Example Co", "Senior Quality Engineer",
+             "London", SCAN_POSTING, "https://example.test/thin"),
+        )
+        conn.commit()
+        result = ct.scan_posting(conn, "https://example.test/thin")
+
+    assert result["ats"]["reliable"] is False
+    assert result["better_source"]["url"] == "https://example.test/full"
+    assert result["better_source"]["source"] == "ashby"
+
+
+@requires_real_master
+def test_the_better_copy_is_not_offered_when_it_is_no_better(tmp_path, monkeypatch):
+    """A few hundred extra characters of navigation boilerplate is not a better
+    advert, and offering it would send the user to a page that fails the same
+    way."""
+    _stub_cv(monkeypatch)
+    db = tmp_path / "bothequal.sqlite3"
+    thin = "A short teaser"
+    with dedup.connect(str(db)) as conn:
+        for url, dup in (("https://example.test/a", None), ("https://example.test/b", "https://example.test/a")):
+            conn.execute(
+                "INSERT INTO job_details (url, company, title, location, description, "
+                "passed_filters, source, duplicate_of) VALUES (?,?,?,?,?,1,'adzuna',?)",
+                (url, "Example Co", "QA Engineer", "London", thin, dup),
+            )
+        conn.commit()
+        assert ct._better_sibling(conn, "https://example.test/a") is None
+
+
+@requires_real_master
+def test_a_reliable_scan_does_not_look_for_a_better_copy(tmp_path, monkeypatch):
+    """The lookup is a fix for one specific failure, not a standing suggestion —
+    running it on every scan would cost a query per row to answer a question
+    nobody asked."""
+    _stub_cv(monkeypatch)
+    db = _scan_db(tmp_path)
+    with dedup.connect(db) as conn:
+        result = ct.scan_posting(conn, "https://example.test/job/1")
+    assert result["ats"]["reliable"] is True
+    assert "better_source" not in result
+
+
+@requires_real_master
+def test_master_doc_status_reports_the_copy_a_scan_would_read(monkeypatch):
+    monkeypatch.setattr(ct.gdoc, "master_cv_text",
+                        lambda **kwargs: {"text": "line one\nline two\n", "source": "export",
+                                          "cached_source": None, "doc_id": "doc-1",
+                                          "fetched_at": "2026-10-01T09:00:00+00:00",
+                                          "stale": False, "age_hours": 0.0,
+                                          "cache_reason": None})
+    status = ct.master_doc_status()
+    assert status["ok"] is True
+    assert status["source"] == "export"
+    assert status["lines"] == 2
+    assert status["headline"] == "line one"
+
+
+@requires_real_master
+def test_master_doc_status_explains_a_failure_instead_of_raising(monkeypatch):
+    """This is the diagnostic command. It has to be the one thing that still
+    answers when everything else is broken."""
+    def failing(**kwargs):
+        raise ct.gdoc.GDocError("MASTER_CV_DOC_URL is not set")
+
+    monkeypatch.setattr(ct.gdoc, "master_cv_text", failing)
+    status = ct.master_doc_status()
+    assert status["ok"] is False
+    assert "MASTER_CV_DOC_URL" in status["error"]
+    # And it says where to look, so the next step does not need a second command.
+    assert "cache_path" in status

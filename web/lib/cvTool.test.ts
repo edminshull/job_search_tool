@@ -28,7 +28,12 @@ const FIXTURE_ROOT = mkdtempSync(path.join(tmpdir(), "cv-guard-test-"));
 // const, so it is read once at import time.
 process.env.CV_OUTPUT_ROOT = path.join(FIXTURE_ROOT, "cv_output");
 
-const {CV_OUTPUT_ROOT, CV_ROOT, CV_TOOL_TIMEOUT_MS, contentTypeFor, resolveServableFile} =
+const {CV_OUTPUT_ROOT, CV_ROOT, CV_TOOL_TIMEOUT_MS, contentTypeFor,
+       resolveServableFile, scanArgs,
+       // The tailoring argv helper, gone with the tailoring UI. Read explicitly
+       // so the test below can assert it is really absent rather than trusting
+       // that nobody re-added it.
+       } =
   await import("./cvTool.ts");
 
 const inside = path.join(CV_OUTPUT_ROOT, "23-09-26", "acme");
@@ -148,6 +153,37 @@ test("maps extensions to content types the browser can act on", () => {
   // An unknown extension must not be guessed at as text/html — that would make
   // an uploaded file scriptable in the origin.
   assert.equal(contentTypeFor("/x/a.bin"), "application/octet-stream");
+});
+
+// --- the scan argv ---------------------------------------------------------
+test("the scan argv is exactly the contract the Python CLI expects", () => {
+  // A typo here is a 502 the user reads as "the scan is broken", so the argv is
+  // asserted rather than assumed. `--refresh-master` is opt-IN: the pipeline's
+  // cache exists so a scan does not depend on a network call it does not need,
+  // and defaulting to a live Google Docs fetch would make every scan pay for one.
+  assert.deepEqual(scanArgs({url: "u1"}), ["scan", "--url", "u1"]);
+  assert.deepEqual(scanArgs({url: "u1", refreshMaster: false}), ["scan", "--url", "u1"]);
+  assert.deepEqual(scanArgs({url: "u1", refreshMaster: true}),
+                   ["scan", "--url", "u1", "--refresh-master"]);
+});
+
+test("a url is passed through verbatim, never reshaped", () => {
+  // Posting urls carry query strings with & and = in them, and they are matched
+  // against job_details.url exactly. Any normalisation here would make the scan
+  // 404 on a job the board is showing.
+  const url = "https://www.adzuna.co.uk/jobs/details/5834862386?utm_medium=api&utm_source=46aec488";
+  assert.deepEqual(scanArgs({url}), ["scan", "--url", url]);
+});
+
+test("the retargeted flow leaves no drafting-provider surface behind", async () => {
+  // The UI no longer drafts a CV for a posting, so the provider whitelist and
+  // the preview argv builder went with it. This asserts the removal rather than
+  // describing it: a half-removed flow is how a route ends up reachable but
+  // unsupported.
+  const mod = await import("./cvTool.ts");
+  for (const gone of ["tailorPreviewArgs", "DRAFT_PROVIDERS", "isDraftProvider"]) {
+    assert.equal(gone in mod, false, `${gone} should no longer be exported`);
+  }
 });
 
 test.after(() => {

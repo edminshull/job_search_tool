@@ -1,5 +1,5 @@
 import { Route, test, expect } from "@playwright/test";
-import { ROW, openBoard, openPanelFor, resetBoard } from "./fixtures";
+import { BOARD, ROW, openBoard, openPanelFor, resetBoard } from "./fixtures";
 
 /**
  * The states the board shows when data is SLOW, unreachable, or REFUSED.
@@ -15,12 +15,13 @@ import { ROW, openBoard, openPanelFor, resetBoard } from "./fixtures";
  *                database and name the reason, NOT render an empty board. A
  *                "0 jobs" board and a broken one must never look alike, because
  *                the entire purpose of this tool is deciding what to apply to.
- *   slow overlay the stored-CV lookup is delayed, so the overlay shows that it is
- *                loading rather than rendering "never tailored" for a job that has
- *                a CV. Showing the wrong state and then correcting it is worse
- *                than a moment of honesty.
- *   refused write a render that fails must leave the overlay open, quote the
- *                pipeline's own message, and state that nothing was written.
+ *   slow overlay the stored-SCAN lookup is delayed, so the overlay shows that it
+ *                is loading rather than rendering the idle screen for a job that
+ *                has a scan. Showing the wrong state and then correcting it is
+ *                worse than a moment of honesty.
+ *   refused scan the scan route refuses (502, the subprocess could not run) and
+ *                the overlay must stay open, quote the pipeline's own message,
+ *                and state that nothing was written.
  */
 test.describe("Loading and error states", () => {
   test.beforeEach(() => resetBoard());
@@ -36,7 +37,7 @@ test.describe("Loading and error states", () => {
     await expect(page.locator("table")).toHaveCount(0);
     // ...and then real data arrives, so the loading state is a phase and not a
     // permanent condition.
-    await expect(page.locator("table tbody tr")).toHaveCount(10);
+    await expect(page.locator("table tbody tr")).toHaveCount(BOARD.visible);
     await expect(page.locator(".loading-state")).toHaveCount(0);
     await page.unroute("**/api/jobs");
 
@@ -69,110 +70,62 @@ test.describe("Loading and error states", () => {
 
     await page.unroute("**/api/jobs");
 
-    // --- 3. the tailoring overlay's own loading state ----------------------
-    // The stored-CV record is fetched separately from the board payload when the
-    // overlay opens, because the drafted YAML is several KB per job. That second
+    // --- 3. the scan overlay's own loading state ---------------------------
+    // The stored-scan record is fetched separately from the board payload when
+    // the overlay opens, because the full scan is several KB per job. That second
     // request can be slow, and until it lands the board genuinely does not know
-    // whether this job has a CV.
-    await page.route("**/api/jobs/tailoring*", async (route: Route) => {
+    // whether this job has a scan.
+    await page.route("**/api/jobs/scan*", async (route: Route) => {
       await new Promise((r) => setTimeout(r, 900));
       await route.continue();
     });
     await openBoard(page);
     await openPanelFor(page, ROW.freshStart);
-    await page.locator("#panel:not(.tailor-panel) button", { hasText: "Tailor CV for this job" }).click();
-    const overlay = page.locator(".tailor-panel");
-    await expect(overlay.locator(".loading-state")).toHaveText("Loading the stored CV…");
+    await page.locator("#panel:not(.tailor-panel) button", { hasText: "Scan CV for this job" }).click();
+    const overlay = page.locator(".tailor-overlay");
+    await expect(overlay.locator(".loading-state")).toHaveText("Loading the stored scan…");
     // The overlay is up but has NOT yet decided which phase to show — so the idle
     // screen must not have appeared. This is the assertion that catches mounting
-    // the overlay before the record arrives, which would flash "Draft a CV" at
-    // someone who already has one.
-    await expect(overlay.locator("button", { hasText: "Draft CV" })).toHaveCount(0);
-    // It resolves into the correct phase: Fresh Start has no CV, so idle.
-    await expect(overlay.locator("h3")).toContainText("Draft a CV for this posting");
+    // the panel before the record arrives, which would flash "does my CV pass this
+    // posting?" at someone whose scan is already stored and about to be shown.
+    await expect(overlay.locator("button", { hasText: "Run the scan" })).toHaveCount(0);
+    await expect(overlay.locator(".scan-verdict")).toHaveCount(0);
+    // It resolves into the correct phase: Fresh Start has no stored scan, so idle.
+    await expect(overlay.locator("h3")).toHaveText("Does my CV pass this posting?");
 
-    // --- 4. a REFUSED render ----------------------------------------------
-    // The renderer refuses to build a CV whose claims cv/master.yaml cannot
-    // support. That is the whole reason the output can be trusted, and it is a
-    // user-actionable outcome (edit or regenerate), not a crash — so it must be
-    // reported as such and must write nothing.
-    await page.route("**/api/tailor/preview", async (route: Route) => {
-      await route.fulfill({
-        status: 200, contentType: "application/json",
-        body: JSON.stringify({
-          url: "https://fixtures.test/jobs/fresh-start-automation",
-          status: "draft", day_dir: "01-01-01", company_slug: "fresh-start-ltd",
-          future_outdir: "/fixtures/cv_output/01-01-01/fresh-start-ltd",
-          tailored_yaml: "roles:\n  - ref: not-in-the-master\n",
-          report: "Draft.", draft_model: "local:qwen3-coder-30b-a3b",
-          verification: { verdict: "reject", verify_model: "deepseek:deepseek-flash",
-            fabricated_claims: "Lists a skill the master cannot evidence." },
-          coverage_before: 64, coverage_after: 70, priority_gaps: 1,
-          gap_report: "", interview_prep_md: null, posting_available: true,
-        }),
-      });
-    });
-
-    // The unsupported-claim branch first: 422, and the copy is specific about
-    // what happened and what to do.
-    await page.route("**/api/tailor/render", async (route: Route) => {
-      await route.fulfill({
-        status: 422,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: "Refusing to render: skill 'Playwright' (ref s9) is not supported by cv/master.yaml.",
-          kind: "unsupported_claim",
-        }),
-      });
-    });
-
-    await overlay.locator("button", { hasText: "Draft CV" }).click();
-    await expect(overlay.locator(".tailor-verdict")).toContainText("Rejected");
-    await overlay.locator("button", { hasText: "Approve & render" }).click();
-
-    await expect(overlay.locator("h3").first()).toHaveText("Nothing was rendered — unsupported claim");
-    // The pipeline's own message, verbatim — it names the skill and the ref, which
-    // is what makes the fix possible.
-    await expect(overlay.locator("pre.tailor-error")).toContainText("is not supported by cv/master.yaml");
-    await expect(overlay).toContainText("refuses to build a CV whose skills the master cannot support");
-    // The overlay stays OPEN: the draft is still there to be fixed, and closing it
-    // would throw away the work.
-    await expect(overlay).toBeVisible();
-    await expect(overlay.locator("h3", { hasText: "Written" })).toHaveCount(0);
-    await expect(overlay.locator("button", { hasText: "Back to the draft" })).toBeVisible();
-
-    // The other branch: a machinery failure rather than a bad claim. 502, and the
-    // generic "No files were written." note instead of the fabrication advice.
-    await page.unroute("**/api/tailor/render");
-    await page.route("**/api/tailor/render", async (route: Route) => {
+    // --- 4. a REFUSED scan --------------------------------------------------
+    // POST /api/cv/scan shells out to the Python pipeline, and a 502 is the
+    // "it never ran" case: no virtualenv, no venv python, a wedged subprocess. It
+    // is a user-actionable outcome (install the venv, try again), not a crash — so
+    // it must be reported as such, with the pipeline's own words intact.
+    const PIPELINE_MESSAGE =
+      "No Python at /repo/.venv/bin/python. The CV engine needs its own virtualenv — "
+      + "create it once with: python3 -m venv .venv";
+    await page.route("**/api/cv/scan", async (route: Route) => {
       await route.fulfill({
         status: 502,
         contentType: "application/json",
-        body: JSON.stringify({
-          error: "No Python at /repo/.venv/bin/python. The CV engine needs its own virtualenv — create it once with: python3 -m venv .venv",
-          kind: "pipeline_error",
-        }),
+        body: JSON.stringify({ error: PIPELINE_MESSAGE }),
       });
     });
-    await overlay.locator("button", { hasText: "Back to the draft" }).click();
-    await expect(overlay.locator("button", { hasText: "Approve & render" })).toBeVisible();
-    await overlay.locator("button", { hasText: "Approve & render" }).click();
 
-    await expect(overlay.locator("h3").first()).toHaveText("Failed");
+    await overlay.locator("button", { hasText: "Run the scan" }).click();
+
+    await expect(overlay.locator("h3")).toHaveText("Could not scan");
     // The instruction to create the venv survives intact, because the pipeline
     // writes its errors to be read by a person. Summarising it here would remove
     // the one line that says how to fix it.
-    await expect(overlay.locator("pre.tailor-error")).toContainText("python3 -m venv .venv");
-    await expect(overlay).toContainText("No files were written.");
-    // Still open, still offering the draft back and a clean restart.
-    await expect(overlay.locator("button", { hasText: "Back to the draft" })).toBeVisible();
-    await expect(overlay.locator("button", { hasText: "Start over" })).toBeVisible();
+    await expect(overlay.locator("pre.tailor-error")).toHaveText(PIPELINE_MESSAGE);
+    await expect(overlay).toContainText("Nothing was written.");
+    // Still open, still offering a retry and a clean way out.
+    await expect(overlay.locator("button", { hasText: "Try again" })).toBeVisible();
+    await expect(overlay.locator("button", { hasText: "Close" })).toBeVisible();
 
     // Closing at this point is allowed (the failure is not a busy state) and the
     // board underneath is still usable — no orphaned overlay, no stuck modal.
     await overlay.locator("#panel-close").click();
-    await expect(page.locator(".tailor-panel")).toHaveCount(0);
+    await expect(page.locator(".tailor-overlay")).toHaveCount(0);
     await expect(page.locator("#panel:not(.tailor-panel)")).toBeVisible();
-    await expect(page.locator("table tbody tr")).toHaveCount(10);
+    await expect(page.locator("table tbody tr")).toHaveCount(BOARD.visible);
   });
 });

@@ -25,7 +25,7 @@ mkdirSync(OUTPUT_ROOT, {recursive: true});
 process.env.DB_PATH = DB_PATH;
 process.env.CV_OUTPUT_ROOT = OUTPUT_ROOT;
 
-const {getJobs, getTailoring} = await import("./db.ts");
+const {getJobs, getTailoring, saveUserStatus} = await import("./db.ts");
 
 // --- fixture: one job whose CV file exists, one whose file does not ---------
 const presentDir = path.join(OUTPUT_ROOT, "23-09-26", "acme");
@@ -46,11 +46,13 @@ const missingPdf = path.join(OUTPUT_ROOT, "23-09-26", "ghost", "Ed-Minshull-CV.p
       day_rate_min REAL, day_rate_max REAL, day_rate_source TEXT,
       rate_verdict TEXT, rate_required REAL, perm_equivalent REAL, rate_reason TEXT,
       language_tier TEXT, language_rank INTEGER, language_hits TEXT,
-      clearance_status TEXT, clearance_evidence TEXT);
+      clearance_status TEXT, clearance_evidence TEXT, last_listed_at TEXT,
+      duplicate_of TEXT);
     CREATE TABLE ai_evaluations (url TEXT PRIMARY KEY, match_score INTEGER,
       recommendation TEXT, genuine_gaps TEXT, transferable_strengths TEXT,
       risk_factors TEXT);
-    CREATE TABLE user_status (url TEXT PRIMARY KEY, my_status TEXT, notes TEXT);
+    CREATE TABLE user_status (url TEXT PRIMARY KEY, my_status TEXT, notes TEXT,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP, inherited_from TEXT);
     CREATE TABLE cv_tailorings (url TEXT PRIMARY KEY, status TEXT, day_dir TEXT,
       company_slug TEXT, tailored_yaml TEXT, pdf_path TEXT, docx_path TEXT,
       master_coverage REAL, tailored_coverage REAL, verify_verdict TEXT,
@@ -62,6 +64,15 @@ const missingPdf = path.join(OUTPUT_ROOT, "23-09-26", "ghost", "Ed-Minshull-CV.p
   addJob.run("u-missing", "Ghost Ltd", "QA Engineer");
   // A job with no tailoring at all, to prove the join does not invent a state.
   addJob.run("u-untailored", "Never Tailored", "Tester");
+  // A re-advert cluster, as app/duplicates.py writes it: u-dup is the same job
+  // as u-orig, and u-dup-own is a third advert you had already decided yourself.
+  addJob.run("u-orig", "Experis", "AI Automation Tester X2");
+  addJob.run("u-dup", "Experis", "AI Automation Tester");
+  addJob.run("u-dup-own", "Experis", "AI Automation Tester (Contract)");
+  db.prepare("UPDATE job_details SET duplicate_of = 'u-orig' WHERE url IN ('u-dup', 'u-dup-own')")
+    .run();
+  db.prepare("INSERT INTO user_status (url, my_status, notes) VALUES (?, 'rejected', 'my own call')")
+    .run("u-dup-own");
 
   const addTailoring = db.prepare(
     `INSERT INTO cv_tailorings (url, status, day_dir, company_slug, pdf_path,
@@ -117,6 +128,75 @@ test("the full tailoring record round-trips for the panel", () => {
   assert.equal(stored?.tailored_coverage, 74);
   assert.equal(stored?.verify_verdict, "accept");
   assert.equal(getTailoring("nobody"), null);
+});
+
+// --- the same job advertised twice ----------------------------------------
+//
+// The failure this covers: a re-advert of a job you already applied to arrived
+// on the board as fresh, un-actioned work — and the only way to find out was to
+// open the advert on LinkedIn and read "Applied". Two things have to hold for the
+// board to fix that: the link has to reach the UI, and a decision you made on one
+// advert has to reach the others WITHOUT overwriting a decision of your own.
+
+test("getJobs exposes the re-advert link and the inherited-status provenance", () => {
+  const jobs = byUrl();
+  assert.equal(jobs.get("u-orig")?.duplicate_of, null, "the original links to nothing");
+  assert.equal(jobs.get("u-dup")?.duplicate_of, "u-orig");
+  assert.equal(jobs.get("u-dup")?.status_inherited_from, null, "nothing inherited yet");
+});
+
+test("setting a status carries it to the other adverts of the same job", () => {
+  saveUserStatus("u-orig", "applied", null);
+  const jobs = byUrl();
+  assert.equal(jobs.get("u-orig")?.my_status, "applied");
+  assert.equal(jobs.get("u-orig")?.status_inherited_from, null, "yours, not inherited");
+  assert.equal(jobs.get("u-dup")?.my_status, "applied");
+  assert.equal(jobs.get("u-dup")?.status_inherited_from, "u-orig",
+    "the copy must be labelled as inherited — it is not the same claim as one you made");
+});
+
+test("a decision you made yourself is never overwritten by an inherited one", () => {
+  // u-dup-own was already rejected BY YOU, with your own note. Copying "applied"
+  // over it would silently discard a real decision — the worst thing this
+  // feature could do.
+  saveUserStatus("u-orig", "applied", null);
+  const job = byUrl().get("u-dup-own");
+  assert.equal(job?.my_status, "rejected");
+  assert.equal(job?.notes, "my own call");
+  assert.equal(job?.status_inherited_from, null);
+});
+
+// Each test below establishes the state it needs rather than relying on the one
+// above it having run: these are the same rows, and a suite whose outcome depends
+// on the ORDER of its tests fails differently depending on how it was invoked.
+
+test("saving a status on the row that inherited it makes it yours", () => {
+  // Establish the inheritance first, so this test stands alone.
+  saveUserStatus("u-orig", "applied", null);
+  assert.equal(byUrl().get("u-dup")?.status_inherited_from, "u-orig",
+    "precondition: u-dup inherited the decision");
+
+  // Deciding it yourself must clear the provenance, or the panel keeps telling you
+  // a value you chose came from somewhere else.
+  saveUserStatus("u-dup", "interview", "call booked");
+  const job = byUrl().get("u-dup");
+  assert.equal(job?.my_status, "interview");
+  assert.equal(job?.notes, "call booked");
+  assert.equal(job?.status_inherited_from, null);
+});
+
+test("clearing a status does not fan it out to the other adverts", () => {
+  // Clearing is not a decision about the job, it is the absence of one — so it
+  // must not touch the other adverts, and must not be mistaken for a value to
+  // propagate.
+  saveUserStatus("u-dup", "interview", null);   // u-dup's own decision
+  saveUserStatus("u-orig", "applied", null);
+  saveUserStatus("u-orig", null, null);          // ...now cleared
+
+  const jobs = byUrl();
+  assert.equal(jobs.get("u-orig")?.my_status, null);
+  assert.equal(jobs.get("u-dup-own")?.my_status, "rejected", "untouched");
+  assert.equal(jobs.get("u-dup")?.my_status, "interview", "its own decision stands");
 });
 
 test.after(() => {

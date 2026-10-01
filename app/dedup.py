@@ -78,7 +78,13 @@ CREATE TABLE IF NOT EXISTS job_details (
     --
     -- A `posted_at` cannot tell you this. Being seen in a board fetch can: a
     -- posting that arrives with every fetch is live whatever its date says.
-    last_listed_at TEXT
+    last_listed_at TEXT,
+    -- The url of the advert this row is a RE-ADVERT of, or NULL when this row
+    -- is the original. Employers and agencies repost the same role under a new
+    -- advert id with a tweaked title ("AI Automation Tester X2" -> "AI
+    -- Automation Tester") and a different office sub-location, which is why the
+    -- url and the exact company_title_key both miss it. See app/duplicates.py.
+    duplicate_of TEXT
 );
 
 CREATE TABLE IF NOT EXISTS ai_evaluations (
@@ -102,6 +108,13 @@ CREATE TABLE IF NOT EXISTS user_status (
     my_status TEXT,
     notes TEXT,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    -- Set ONLY when my_status was copied from another row you had already
+    -- actioned (see app/duplicates.py), and it names that row. The distinction
+    -- has to be visible: "applied" that you recorded and "applied" that a
+    -- re-advert inherited mean different things, and a status the tool invented
+    -- must never be mistaken for one you chose. Cleared the moment you set a
+    -- status on this row yourself.
+    inherited_from TEXT,
     FOREIGN KEY (url) REFERENCES job_details(url)
 );
 
@@ -133,6 +146,7 @@ CREATE TABLE IF NOT EXISTS cv_tailorings (
     verify_verdict TEXT,      -- accept | revise | reject
     verify_notes TEXT,        -- the verifier's findings, verbatim
     attempts TEXT,            -- JSON: one entry per drafting attempt, in order
+    readded TEXT,            -- JSON: what cv_tailor restored from the master
     master_coverage REAL,     -- priority-term %, before tailoring
     tailored_coverage REAL,   -- priority-term %, after tailoring
     error TEXT,               -- the failure that stopped the last attempt
@@ -163,6 +177,40 @@ CREATE TABLE IF NOT EXISTS drafting_lessons (
     last_seen TEXT DEFAULT CURRENT_TIMESTAMP,
     active_since TEXT,        -- set when hits reach the threshold; NULL means "not yet taught"
     last_evidence TEXT        -- human audit only. NEVER injected into a prompt.
+);
+"""
+
+# ---------------------------------------------------------------------------
+# cv_scans — the ATS scan of the master CV against one posting
+# ---------------------------------------------------------------------------
+# Its OWN table rather than more columns on cv_tailorings, and that separation
+# is load-bearing. cv_tailorings.status is what the board reads to answer "is
+# there a usable CV here?", and it holds one value per job. A scan is a
+# different question about the same job, asked at a different time, and putting
+# it in that column would mean each scan OVERWROTE a "rendered" status — taking
+# the PDF link away from a job that still has a perfectly good PDF on disk.
+#
+# `scan` holds the whole JSON payload rather than one column per field. The
+# scan's shape is the part most likely to change next (new verdict bands, new
+# suggestion kinds) and its individual fields are only ever read by the panel
+# that already knows the shape; the scalar columns beside it exist purely so
+# the BOARD can sort and badge without parsing JSON for every row.
+SCAN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS cv_scans (
+    url TEXT PRIMARY KEY,
+    verdict TEXT,                -- pass | borderline | fail
+    coverage REAL,               -- priority-term %, the CV as it stands
+    projected_coverage REAL,     -- priority-term %, if every suggestion were added
+    hard_gaps INTEGER,           -- requirement-level hard skills the CV does not mention
+    suggestion_count INTEGER,    -- master achievements worth adding
+    cv_source TEXT,              -- service_account | export | cache
+    cv_fetched_at TEXT,          -- when that copy of the Doc was taken
+    cv_stale INTEGER,            -- 1 when the scan ran against the cached copy
+    scan TEXT,                   -- JSON: the whole payload
+    error TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (url) REFERENCES job_details(url)
 );
 """
 
@@ -209,9 +257,17 @@ def _migrate(conn) -> None:
         ("clearance_status", "TEXT"),
         ("clearance_evidence", "TEXT"),
         ("last_listed_at", "TEXT"),
+        ("duplicate_of", "TEXT"),
     ):
         if column not in existing:
             conn.execute(f"ALTER TABLE job_details ADD COLUMN {column} {decl}")
+
+    # user_status needs its own list for the same reason cv_tailorings does: a
+    # column added to job_details is invisible here.
+    user_status = {row[1] for row in conn.execute("PRAGMA table_info(user_status)")}
+    for column, decl in (("inherited_from", "TEXT"),):
+        if column not in user_status:
+            conn.execute(f"ALTER TABLE user_status ADD COLUMN {column} {decl}")
 
     # cv_tailorings needs the same treatment for the same reason. `attempts` is
     # the drafting provenance — which model drafted, in what order, and why an
@@ -222,7 +278,7 @@ def _migrate(conn) -> None:
     # The user is left looking at a local draft and a verdict with no way to tell
     # that a cloud retry happened at all.
     tailoring = {row[1] for row in conn.execute("PRAGMA table_info(cv_tailorings)")}
-    for column, decl in (("attempts", "TEXT"),):
+    for column, decl in (("attempts", "TEXT"), ("readded", "TEXT")):
         if column not in tailoring:
             conn.execute(f"ALTER TABLE cv_tailorings ADD COLUMN {column} {decl}")
 
@@ -238,6 +294,9 @@ def connect(db_path: str = DB_PATH):
     # lessons table is new, so an existing database simply gains it, which is the
     # one case _migrate's ALTER list neither covers nor needs to.
     conn.executescript(LESSON_SCHEMA)
+    # Same reasoning as LESSON_SCHEMA above: cv_scans is a whole new table, so
+    # an existing database gains it here and _migrate needs no entry for it.
+    conn.executescript(SCAN_SCHEMA)
     _migrate(conn)
     try:
         yield conn
@@ -273,8 +332,9 @@ def save_details(conn, job: dict, passed_filters: bool) -> None:
         "(url, company, title, location, posted_at, description, passed_filters, source, "
         " employment_type, ir35_status, ir35_evidence, day_rate_min, day_rate_max, "
         " day_rate_source, rate_verdict, rate_required, perm_equivalent, rate_reason, "
-        " language_tier, language_rank, language_hits, clearance_status, clearance_evidence) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " language_tier, language_rank, language_hits, clearance_status, clearance_evidence, "
+        " duplicate_of) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             job.get("url", ""),
             job.get("company", ""),
@@ -299,6 +359,7 @@ def save_details(conn, job: dict, passed_filters: bool) -> None:
             job.get("language_hits"),
             job.get("clearance_status"),
             job.get("clearance_evidence"),
+            job.get("duplicate_of"),
         ),
     )
 
@@ -313,6 +374,7 @@ JOB_DETAIL_COLUMNS = [
     "rate_verdict", "rate_required", "perm_equivalent", "rate_reason",
     "language_tier", "language_rank", "language_hits",
     "clearance_status", "clearance_evidence",
+    "duplicate_of",
 ]
 
 
@@ -358,6 +420,16 @@ def iter_passed(conn):
     cur = conn.execute(_select_job_details("WHERE passed_filters = 1"))
     for row in cur.fetchall():
         yield _row_to_dict(row)
+
+
+def set_duplicate_of(conn, url: str, original_url: str | None) -> None:
+    """Point a stored row at the advert it is a re-advert of (or clear it).
+
+    The pipeline sets this through save_details, in the same INSERT as the row
+    itself. This setter exists for the audit (app/find_duplicates.py), which
+    repairs rows that were stored before the link existed."""
+    conn.execute("UPDATE job_details SET duplicate_of = ? WHERE url = ?",
+                 (original_url, url))
 
 
 def set_passed_filters(conn, url: str, passed: bool) -> None:
@@ -522,22 +594,105 @@ def save_evaluation(conn, url: str, evaluation: dict, model: str) -> None:
 def save_user_status(conn, url: str, my_status: str | None, notes: str | None) -> None:
     """my_status should be one of MY_STATUS_VALUES or None/'' to clear it.
     Not validated strictly here (the web UI constrains it via a <select>)
-    so a hand-edited import file with a typo doesn't hard-fail the import."""
+    so a hand-edited import file with a typo doesn't hard-fail the import.
+
+    Clearing `inherited_from` is the point of this function doing more than an
+    upsert of two columns: writing a status HERE means you decided it, so any
+    inherited status for this row stops being inherited and becomes yours. Without
+    that, a row you had just actioned yourself would keep claiming the status came
+    from another advert — see app/duplicates.py.
+
+    It then fans the decision out to the other adverts of the same job
+    (propagate_status) — see that function for why, and note that it only ever
+    fills rows that have no status of their own."""
     conn.execute(
-        "INSERT INTO user_status (url, my_status, notes, updated_at) "
-        "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+        "INSERT INTO user_status (url, my_status, notes, updated_at, inherited_from) "
+        "VALUES (?, ?, ?, CURRENT_TIMESTAMP, NULL) "
         "ON CONFLICT(url) DO UPDATE SET my_status=excluded.my_status, "
-        "notes=excluded.notes, updated_at=CURRENT_TIMESTAMP",
+        "notes=excluded.notes, updated_at=CURRENT_TIMESTAMP, inherited_from=NULL",
         (url, my_status or None, notes or None),
     )
+    propagate_status(conn, url, my_status or None)
+
+
+def save_inherited_status(conn, url: str, my_status: str, source_url: str) -> bool:
+    """Copy an already-made decision onto a re-advert of the same job.
+
+    Deliberately NOT an upsert over the whole row, and deliberately refusing to
+    touch a status you set yourself:
+
+      * a row whose status YOU set is skipped outright — the tool never overwrites
+        a real decision with a derived one;
+      * a status that was itself INHERITED may be replaced, though. Treating it as
+        sacred made the first inheritance permanent: once a re-advert picked up
+        "skipped" from one advert of the job, a later decision on another advert
+        could never correct it, and which decision won came down to the order you
+        happened to click in. `inherited_from IS NOT NULL` is what distinguishes
+        the two, and it is the whole reason the column is stored rather than
+        recomputed;
+      * notes are left alone. Your notes are yours, and inventing them for a
+        different row would be worse than the duplicate this is fixing.
+
+    The notes column is therefore only ever populated by save_user_status, and
+    this function writes exactly two columns plus its provenance. Returns True
+    when a row was written."""
+    existing = conn.execute(
+        "SELECT my_status, inherited_from FROM user_status WHERE url = ?", (url,)).fetchone()
+    if existing and existing[0] and not existing[1]:
+        return False  # you already decided this one — leave it alone
+    conn.execute(
+        "INSERT INTO user_status (url, my_status, inherited_from, updated_at) "
+        "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(url) DO UPDATE SET my_status=excluded.my_status, "
+        "inherited_from=excluded.inherited_from, updated_at=CURRENT_TIMESTAMP",
+        (url, my_status, source_url),
+    )
+    return True
 
 
 def get_user_status(conn, url: str) -> dict | None:
-    cur = conn.execute("SELECT url, my_status, notes, updated_at FROM user_status WHERE url = ?", (url,))
+    cur = conn.execute(
+        "SELECT url, my_status, notes, updated_at, inherited_from FROM user_status WHERE url = ?",
+        (url,))
     row = cur.fetchone()
     if row is None:
         return None
-    return dict(zip(["url", "my_status", "notes", "updated_at"], row))
+    return dict(zip(["url", "my_status", "notes", "updated_at", "inherited_from"], row))
+
+
+def propagate_status(conn, url: str, my_status: str | None) -> int:
+    """Carry a status you just set onto the other adverts of the SAME job.
+
+    The forward half of the duplicate handling in app/duplicates.py: that module
+    decides which rows are the same job and records it in `duplicate_of`, and this
+    is what stops the other copies sitting on the board as untouched work once you
+    have dealt with one of them. Without it, applying to the newer advert leaves
+    the older one looking like a job you have not got to yet.
+
+    Deliberately expressed over `duplicate_of` alone rather than by re-running the
+    matching rules, so the one place that decides what a duplicate IS stays
+    app/duplicates.py — this function only follows links it already wrote. That
+    also makes it a single query, which matters because the board calls it on
+    every status change (web/lib/db.ts does the same thing on its side).
+
+    Only rows with no status of their own are written, and each records where the
+    status came from. Never touches `notes`. Returns the number of rows written."""
+    if not url or not my_status:
+        return 0
+    root = conn.execute(
+        "SELECT COALESCE(duplicate_of, url) FROM job_details WHERE url = ?", (url,)).fetchone()
+    if root is None:
+        return 0
+    siblings = [r[0] for r in conn.execute(
+        "SELECT url FROM job_details WHERE url = ? OR duplicate_of = ?",
+        (root[0], root[0]))]
+    written = 0
+    for sibling in siblings:
+        if sibling == url:
+            continue
+        if save_inherited_status(conn, sibling, my_status, url):
+            written += 1
+    return written
 
 
 # Columns of cv_tailorings, in table order. Named once so the upsert below and
@@ -547,7 +702,8 @@ CV_TAILORING_FIELDS = [
     "status", "day_dir", "company_slug", "tailored_yaml", "report",
     "interview_prep_md", "outdir", "pdf_path", "docx_path", "gap_report_path",
     "interview_prep_path", "draft_model", "verify_model", "verify_verdict",
-    "verify_notes", "attempts", "master_coverage", "tailored_coverage", "error",
+    "verify_notes", "attempts", "readded", "master_coverage", "tailored_coverage",
+    "error",
 ]
 
 
@@ -587,6 +743,49 @@ def save_tailoring(conn, url: str, **fields) -> None:
 def get_tailoring(conn, url: str) -> dict | None:
     cols = ["url"] + CV_TAILORING_FIELDS + ["created_at", "updated_at"]
     cur = conn.execute(f"SELECT {', '.join(cols)} FROM cv_tailorings WHERE url = ?", (url,))
+    row = cur.fetchone()
+    return dict(zip(cols, row)) if row else None
+
+
+# Columns of cv_scans, in table order — the same discipline CV_TAILORING_FIELDS
+# follows, and for the same reason: the scalar columns are the ones the board
+# reads, so they are named once here rather than spelled out in the SQL that
+# happens to need them.
+CV_SCAN_FIELDS = [
+    "verdict", "coverage", "projected_coverage", "hard_gaps", "suggestion_count",
+    "cv_source", "cv_fetched_at", "cv_stale", "scan", "error",
+]
+
+
+def save_scan(conn, url: str, **fields) -> None:
+    """Upsert a cv_scans row. Only the keys passed are written.
+
+    Same contract as save_tailoring: an unknown key raises rather than being
+    dropped, because a typo'd column name would otherwise produce a save that
+    silently lost the value it was called to store."""
+    unknown = set(fields) - set(CV_SCAN_FIELDS)
+    if unknown:
+        raise ValueError(f"Unknown cv_scans field(s): {sorted(unknown)}")
+    if not fields:
+        return
+    existing = conn.execute("SELECT 1 FROM cv_scans WHERE url = ?", (url,)).fetchone()
+    if existing is None:
+        cols = ["url"] + list(fields)
+        conn.execute(
+            f"INSERT INTO cv_scans ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+            [url] + [fields[c] for c in fields],
+        )
+    else:
+        assignments = ", ".join(f"{c}=?" for c in fields)
+        conn.execute(
+            f"UPDATE cv_scans SET {assignments}, updated_at=CURRENT_TIMESTAMP WHERE url = ?",
+            [fields[c] for c in fields] + [url],
+        )
+
+
+def get_scan(conn, url: str) -> dict | None:
+    cols = ["url"] + CV_SCAN_FIELDS + ["created_at", "updated_at"]
+    cur = conn.execute(f"SELECT {', '.join(cols)} FROM cv_scans WHERE url = ?", (url,))
     row = cur.fetchone()
     return dict(zip(cols, row)) if row else None
 

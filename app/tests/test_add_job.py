@@ -316,3 +316,224 @@ def test_add_job_never_rejects_on_day_rate(db):
     assert got["passed_filters"] == 1
     assert got["rate_verdict"] == "fail"
     assert got["rate_required"] > 300
+
+
+# --- adding from the URL alone: python -m app.add_job --url "…" ------------
+#
+# The short form this tool now leads with. Driven in-process rather than as a
+# subprocess (unlike the CLI tests above) because the point is the FETCH, and
+# httpx.get can only be patched in this process. Same style as
+# test_aggregator_clients.py.
+#
+# Nothing here touches the network: every run patches httpx.get.
+FETCHED_PAGE = """
+<section class="top-card-layout">
+  <h2 class="top-card-layout__title topcard__title">Senior Quality Assurance Automation Engineer</h2>
+  <a class="topcard__org-name-link" href="https://uk.linkedin.com/company/haleybridge">Haley Bridge</a>
+  <span class="topcard__flavor topcard__flavor--bullet">London Area, United Kingdom</span>
+  <span class="posted-time-ago__text">14 hours ago</span>
+  <span class="num-applicants__caption topcard__flavor--bullet">53 applicants</span>
+</section>
+<div class="show-more-less-html__markup show-more-less-html__markup--clamp-after-5">
+  <p>Senior QA Automation Engineer, Python, Java and Linux.</p>
+  <p>Sponsorship is <strong>NOT</strong> available.</p>
+</div>
+<ul class="description__job-criteria-list">
+  <li class="description__job-criteria-item">
+    <h3 class="description__job-criteria-subheader">Employment type</h3>
+    <span class="description__job-criteria-text description__job-criteria-text--criteria">Full-time</span>
+  </li>
+</ul>
+"""
+
+
+@pytest.fixture
+def no_piped_stdin(monkeypatch):
+    """An interactive run, decided explicitly. Under pytest stdin is a capture
+    object whose isatty() answers False, which would send main() down the
+    piped-stdin branch — a coincidence of the test runner, not the behaviour
+    under test."""
+    monkeypatch.setattr(add_job, "_stdin_is_piped", lambda: False)
+
+
+def _fake_page(text="", status_code=200):
+    from unittest.mock import MagicMock
+    resp = MagicMock()
+    resp.text = text
+    resp.status_code = status_code
+    return resp
+
+
+def _run_cli(monkeypatch, argv):
+    monkeypatch.setattr(sys, "argv", ["app.add_job", *argv])
+    add_job.main()
+
+
+URL_ONLY = "https://www.linkedin.com/jobs/view/4471638473"
+
+
+def test_url_alone_fetches_every_field_and_stores_it(db, monkeypatch, no_piped_stdin, capsys):
+    """The whole point of the short form: one command, no flags but the URL."""
+    from unittest.mock import patch
+    with patch("httpx.get", return_value=_fake_page(FETCHED_PAGE)):
+        _run_cli(monkeypatch, ["--url", URL_ONLY, "--db", db])
+    out = capsys.readouterr().out
+    assert "Result       : Added Haley Bridge" in out
+
+    with dedup.connect(db) as conn:
+        got = dedup.get_details_by_url(conn, add_job.canonical_url(URL_ONLY))
+    assert got is not None, "the URL-only run stored nothing"
+    assert got["company"] == "Haley Bridge"
+    assert got["title"] == "Senior Quality Assurance Automation Engineer"
+    assert got["location"] == "London Area, United Kingdom"
+    assert got["posted_at"] == "14 hours ago"
+    assert got["source"] == "linkedin"
+    # The advert text, as text — this is what the AI step scores.
+    assert "Python, Java and Linux" in got["description"]
+    assert "<p>" not in got["description"]
+    # Stored passed, like every other hand-added job.
+    assert got["passed_filters"] == 1
+
+
+def test_fetched_job_arrives_with_its_screening_signals(db, monkeypatch, no_piped_stdin):
+    """A pipeline job is stored with language_tier/clearance_status filled by
+    `filters.screening_signals`; a hand-added one used to be stored with them
+    NULL. That is not cosmetic — the board's language filter drops null-tier
+    rows, the detail panel shows no language/clearance chip, and ai_evaluate
+    reads the stored tier rather than re-deriving it. Now that a fetched
+    posting carries the full advert text, it gets the same treatment."""
+    from unittest.mock import patch
+    with patch("httpx.get", return_value=_fake_page(FETCHED_PAGE)):
+        _run_cli(monkeypatch, ["--url", URL_ONLY, "--db", db])
+
+    with dedup.connect(db) as conn:
+        got = dedup.get_details_by_url(conn, add_job.canonical_url(URL_ONLY))
+    assert got["language_tier"] is not None, "screening_signals was not applied"
+    assert got["clearance_status"] is not None
+
+
+def test_explicit_flags_win_over_the_fetched_page(db, monkeypatch, no_piped_stdin):
+    """Same rule --infer follows: the fetch fills the gap, it does not override
+    what you said. You may be correcting LinkedIn (agency vs end client)."""
+    from unittest.mock import patch
+    with patch("httpx.get", return_value=_fake_page(FETCHED_PAGE)):
+        _run_cli(monkeypatch, ["--url", URL_ONLY, "--db", db,
+                               "--company", "Haley Bridge Ltd", "--location", "London (hybrid)"])
+
+    with dedup.connect(db) as conn:
+        got = dedup.get_details_by_url(conn, add_job.canonical_url(URL_ONLY))
+    assert got["company"] == "Haley Bridge Ltd"
+    assert got["location"] == "London (hybrid)"
+    # ...and the fields you did NOT pass still come from the page.
+    assert got["title"] == "Senior Quality Assurance Automation Engineer"
+
+
+def test_a_paste_still_wins_over_the_fetched_advert(db, monkeypatch, no_piped_stdin, tmp_path):
+    """The paste workflow is unchanged: text you supply is your text. A fetch
+    only fills the description when there is none."""
+    from unittest.mock import patch
+    paste = tmp_path / "posting.txt"
+    paste.write_text("A curated copy of the advert, with my own notes.")
+
+    with patch("httpx.get", return_value=_fake_page(FETCHED_PAGE)):
+        _run_cli(monkeypatch, ["--url", URL_ONLY, "--db", db, "--file", str(paste)])
+
+    with dedup.connect(db) as conn:
+        got = dedup.get_details_by_url(conn, add_job.canonical_url(URL_ONLY))
+    assert got["description"] == "A curated copy of the advert, with my own notes."
+    assert got["company"] == "Haley Bridge"   # still filled from the page
+
+
+def test_fetch_failure_falls_back_to_a_usable_error(db, monkeypatch, no_piped_stdin, capsys):
+    """An unreachable posting must not look like a crash, and must not write a
+    half-empty row. The message names the paste workflow, which still works."""
+    from unittest.mock import patch
+    with patch("httpx.get", return_value=_fake_page("", status_code=404)):
+        with pytest.raises(SystemExit) as excinfo:
+            _run_cli(monkeypatch, ["--url", URL_ONLY, "--db", db])
+    assert excinfo.value.code != 0
+    captured = capsys.readouterr()
+    assert "Could not read the posting from LinkedIn" in captured.err
+    assert "no posting for that job id" in captured.err
+    assert "paste" in captured.err.lower()
+    # sys.exit("…") carries the message in the code; only the interpreter's
+    # own shutdown prints it, so in-process it has to be read off the exception
+    # rather than from stderr.
+    assert "Missing required field(s)" in str(excinfo.value.code)
+
+    with dedup.connect(db) as conn:
+        assert dedup.get_details_by_url(conn, add_job.canonical_url(URL_ONLY)) is None
+
+
+def test_no_fetch_never_touches_the_network(db, monkeypatch, no_piped_stdin, capsys):
+    """--no-fetch is the escape hatch for a sandbox, a dead link, or simply not
+    wanting the tool to make a request. It must not make one."""
+    from unittest.mock import patch
+    with patch("httpx.get", side_effect=AssertionError("network was used")):
+        with pytest.raises(SystemExit) as excinfo:
+            _run_cli(monkeypatch, ["--url", URL_ONLY, "--db", db, "--no-fetch"])
+    assert "Missing required field(s)" in str(excinfo.value.code)
+
+
+def test_fetch_is_not_attempted_when_both_fields_are_given(db, monkeypatch, no_piped_stdin):
+    """The paste-and-pass-the-fields recipe must stay network-free: it is the
+    path that works for a posting no fetcher can reach, and it should not start
+    making requests now that a fetcher exists."""
+    from unittest.mock import patch
+    with patch("httpx.get", side_effect=AssertionError("network was used")):
+        _run_cli(monkeypatch, ["--url", URL_ONLY, "--db", db,
+                               "--company", "Resillion", "--title", "Senior Test Analyst",
+                               "--location", "London (hybrid)"])
+
+    with dedup.connect(db) as conn:
+        got = dedup.get_details_by_url(conn, add_job.canonical_url(URL_ONLY))
+    assert got["company"] == "Resillion" and got["title"] == "Senior Test Analyst"
+
+
+def test_fetch_reads_the_day_rate_and_contract_type_off_the_page(db, monkeypatch, no_piped_stdin):
+    """A contract advert states its engagement and its rate in the same text
+    the fetch brings back, so a URL-only run lands on the board with the
+    Contract chip and the IR35 verdict — no --contract flag needed."""
+    from unittest.mock import patch
+    page = FETCHED_PAGE.replace(
+        ">Full-time<", ">Contract<").replace(
+        "<p>Sponsorship is <strong>NOT</strong> available.</p>",
+        "<p>6 month contract, Outside IR35 determination.</p>"
+        "<p>Rate: £450 - £500 per day.</p>")
+
+    with patch("httpx.get", return_value=_fake_page(page)):
+        _run_cli(monkeypatch, ["--url", URL_ONLY, "--db", db])
+
+    with dedup.connect(db) as conn:
+        got = dedup.get_details_by_url(conn, add_job.canonical_url(URL_ONLY))
+    assert got["employment_type"] == "contract"
+    assert got["ir35_status"] == "outside"
+    assert (got["day_rate_min"], got["day_rate_max"]) == (450.0, 500.0)
+    assert got["rate_verdict"] == "pass"
+
+
+def test_permanent_flag_overrides_the_pages_contract_type(db, monkeypatch, no_piped_stdin):
+    """Only ever auto-set when you did not say. --permanent is a statement."""
+    from unittest.mock import patch
+    page = FETCHED_PAGE.replace(">Full-time<", ">Contract<")
+    with patch("httpx.get", return_value=_fake_page(page)):
+        _run_cli(monkeypatch, ["--url", URL_ONLY, "--db", db, "--permanent"])
+
+    with dedup.connect(db) as conn:
+        got = dedup.get_details_by_url(conn, add_job.canonical_url(URL_ONLY))
+    assert got["employment_type"] == "permanent"
+
+
+def test_url_only_works_for_a_search_url_too(db, monkeypatch, no_piped_stdin):
+    """A URL copied from the results list carries currentJobId instead of the
+    /view/<id> path, and canonical_url already collapses it to one key — the
+    fetch must read the same job from it rather than refusing."""
+    from unittest.mock import patch
+    search_url = "https://www.linkedin.com/jobs/search/?currentJobId=4471638473&keywords=qa"
+    with patch("httpx.get", return_value=_fake_page(FETCHED_PAGE)) as mock_get:
+        _run_cli(monkeypatch, ["--url", search_url, "--db", db])
+    assert mock_get.call_args[0][0].endswith("/jobPosting/4471638473")
+
+    with dedup.connect(db) as conn:
+        got = dedup.get_details_by_url(conn, add_job.canonical_url(search_url))
+    assert got["company"] == "Haley Bridge"

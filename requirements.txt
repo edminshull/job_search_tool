@@ -18,3 +18,17 @@ pytest>=8.0
 python-docx>=1.1
 fpdf2>=2.7
 pypdf>=5.0
+
+# --- Master CV in Google Docs (app/gdoc.py) ---------------------------------
+# OPTIONAL, and only for the recommended setup: reading a PRIVATE Doc through a
+# service account. Without it, gdoc.py falls back to the Doc's plain text
+# export, which needs no credential but only works because the Doc is readable
+# by anyone holding the URL.
+#
+#   ./.venv/bin/python -m pip install google-auth
+#   # then set GOOGLE_SERVICE_ACCOUNT_FILE in .env — see .env.example
+#
+# Left commented out deliberately: this is the one dependency in this file that
+# is not needed for the tool to work, and installing it by default would imply
+# the link-shared fallback is not the thing being used.
+# google-auth>=2.0

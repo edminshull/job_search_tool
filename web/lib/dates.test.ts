@@ -68,14 +68,35 @@ test("labels are human, and exact text survives for the tooltip", () => {
   assert.equal(postedAge("Not stated", NOW).label, "no date");
 });
 
-test("the 30-day default window keeps a month and drops older", () => {
+test("the board opens showing every date, and the window is opt-in", () => {
+  // The default was 30 days until 2026-10-01, and it was hiding real work.
+  // Measured against the live board: 127 rows passed the filters, all 127 were
+  // already AI-scored, and the 30-day default hid 25 of them — including
+  // "Lendable / Senior Quality Engineer - AI" at score 72, the best-scoring row
+  // in the run `python -m app.ai_evaluate` had just printed to the terminal.
+  // The jobs the pipeline had just paid to score were the jobs the board would
+  // not show, and the aggregation that proves it is in DEFAULT_DATE_WINDOW's
+  // comment in lib/dates.ts.
+  //
+  // This test asserts the OUTCOME (nothing is hidden by default) rather than
+  // the constant, so re-introducing a windowed default fails here whichever
+  // value it uses.
   const days = DATE_WINDOWS.find((w) => w.value === DEFAULT_DATE_WINDOW)?.days;
-  assert.equal(days, 30, "the default window is meant to be one month");
+  assert.equal(DEFAULT_DATE_WINDOW, "all");
+  assert.equal(days, null, "the default must show everything");
 
-  assert.equal(withinWindow(postedAge("5 days ago", NOW), days), true);
-  assert.equal(withinWindow(postedAge("29 days ago", NOW), days), true);
-  assert.equal(withinWindow(postedAge("31 days ago", NOW), days), false);
-  assert.equal(withinWindow(postedAge("8 months ago", NOW), days), false);
+  for (const ago of ["today", "5 days ago", "29 days ago", "31 days ago", "8 months ago", "3 years ago"]) {
+    assert.equal(withinWindow(postedAge(ago, NOW), days), true, `${ago} must not be hidden`);
+  }
+});
+
+test("a narrowed window still means exactly what it says", () => {
+  // The window itself is untouched by the default change — it is a filter, and
+  // it has to keep working for when 127 rows is too many to scan by eye.
+  assert.equal(withinWindow(postedAge("5 days ago", NOW), 30), true);
+  assert.equal(withinWindow(postedAge("29 days ago", NOW), 30), true);
+  assert.equal(withinWindow(postedAge("31 days ago", NOW), 30), false);
+  assert.equal(withinWindow(postedAge("8 months ago", NOW), 30), false);
 });
 
 test("an undated posting is never hidden by the window", () => {
@@ -105,7 +126,9 @@ test("windowDays maps every option, and 'all' really means all", () => {
   // because a filtered board still looks exactly like a board.
   assert.equal(windowDays("all"), null);
   assert.equal(withinWindow(postedAge("3 years ago"), windowDays("all")), true);
-  // An unrecognised value falls back to the default rather than showing
-  // everything or nothing.
-  assert.equal(windowDays("nonsense"), 30);
+  // An unrecognised value shows EVERYTHING rather than silently narrowing. The
+  // old fallback was a literal 30, which meant a typo'd or newly-added window
+  // value quietly hid a month of postings — the same failure mode that cost the
+  // 30-day default its job, arriving through a second door.
+  assert.equal(windowDays("nonsense"), null);
 });

@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -59,7 +60,9 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from app import ats_scan
 from app import dedup
+from app import gdoc
 from app import llm_providers
 from app import filters
 
@@ -215,6 +218,150 @@ def merge_required_groups(tailored_data: dict, master_data: dict) -> tuple[dict,
     out = dict(tailored_data)
     out["skills"] = merged
     return out, notes + [str(g["group"]) for g in missing]
+
+
+# ---------------------------------------------------------------------------
+# Experience: the same enforcement, for the other half of the same lesson
+# ---------------------------------------------------------------------------
+# The note above explains why the skill groups are enforced in code. Experience
+# is the second sighting of that failure, found 2026-09-25, and it is the larger
+# one.
+#
+# Rule 5 of the draft prompt tells the model to "Select AGGRESSIVELY ... Drop
+# roles and bullets that do not serve this application", and the local drafter
+# obeys it. Measured over the first twelve tailored CVs: the cloud drafter kept
+# all 19 of the master's achievements in 3 of 3 drafts, while the local model
+# kept all 19 in only 3 of 9 and otherwise dropped between 4 and 9 — jobgether
+# and revtech at 10, kainos and experis at 15. The RevTech draft is the case
+# worth reading: of the nine bullets it dropped, three carried the master's ONLY
+# numeric metrics (6 months, 54 repositories, three-week sprints) and one was the
+# only leadership bullet in the file.
+#
+# Why this is not legitimate tailoring, in the way that trimming items inside a
+# skill group is: a skill group is a CATALOGUE, where an undifferentiated list
+# dilutes the items that matter, so choosing between items is real editorial
+# work. An experience bullet is a discrete FACT about work the candidate did.
+# Omitting one does not sharpen the CV, it silently deletes a claim the candidate
+# was entitled to make — and the local model does not select on which facts are
+# worth keeping, it selects on whether a bullet names a tool the posting already
+# mentioned, which is a different question with a systematically wrong answer.
+#
+# So the same remedy as the groups, for the same reason the file gives there: the
+# code holds the line, not the model's good intentions. Ordering and rewording
+# remain entirely the drafter's — that IS the tailoring, and this never touches
+# either.
+def merge_required_experience(tailored_data: dict, master_data: dict) -> tuple[dict, list[str]]:
+    """Force every master role and achievement back into a draft's experience.
+
+    Returns (data, notes) where `notes` names what was re-added, so the UI can
+    say the draft was corrected rather than letting a code-level fix masquerade
+    as the model's judgement — the same contract as merge_required_groups.
+
+    WHAT IS PRESERVED, AND WHY THAT IS THE WHOLE POINT
+
+    The drafter's ORDER is the tailoring and is never touched: the achievement
+    that best answers this posting stays first under the current role, and the
+    bullets it did keep stay in exactly the sequence it chose. Only what was LEFT
+    OUT is restored, and each restored bullet is inserted at the position the
+    master puts it relative to the drafter's own list. So a role the drafter
+    reduced to `fintech-1..5, fintech-10, fintech-11` comes back as the master's 1..11
+    sequence, which is what "reorder and reword, do not select" should look like.
+
+    NOTHING IS INVENTED HERE. Every restored ref is read out of the master, so
+    this cannot add a fact the candidate cannot support — the opposite of the
+    risk render.py's fabrication guard exists for. A ref the master does NOT hold
+    is left exactly as the drafter wrote it: that is a finding for
+    _validate_against_master and the verifier, and papering over it here would
+    hide a broken draft behind a code-level correction.
+
+    A re-added ROLE carries no `achievements` key at all, because the engine
+    reads an ABSENT key as "every achievement for this role" (scripts/model.py,
+    Tailored.resolved_experience). That is the same convention
+    cv/full-inventory.tailored.yaml relies on, and it means a restored role reads
+    as complete without listing its bullets out.
+
+    Applied at DRAFT time, in draft_cv, and deliberately not at render time: a
+    user who edits the YAML in the preview and deletes a bullet has made a
+    human judgement, and render() respects it — exactly as it does for a skill
+    group."""
+    roles = tailored_data.get("experience")
+    master_roles = [r for r in (master_data.get("experience") or []) if r.get("id")]
+    if not roles or not master_roles:
+        return tailored_data, []
+
+    by_id = {r["id"]: r for r in master_roles}
+    role_ids = [r["id"] for r in master_roles]
+    role_rank = {rid: i for i, rid in enumerate(role_ids)}
+    notes: list[str] = []
+    touched = False
+
+    # --- bullets the drafter left out of a role it kept ---------------------
+    for sel in roles:
+        if not isinstance(sel, dict):
+            continue
+        role = by_id.get(sel.get("ref"))
+        # An ABSENT `achievements` key already means "all of this role's
+        # achievements", so there is nothing to restore; an unknown ref is a
+        # finding rather than a gap and is not ours to fill.
+        if role is None or sel.get("achievements") is None:
+            continue
+        order = [a.get("id") for a in (role.get("achievements") or []) if a.get("id")]
+        if not order:
+            continue
+        rank = {aid: i for i, aid in enumerate(order)}
+        kept = list(sel.get("achievements") or [])
+        if not kept:
+            # An explicitly EMPTY list renders the role as a title with no
+            # bullets under it, which is never intentional — the same shape
+            # merge_required_groups fills for a group kept with no items.
+            sel["achievements"] = [{"ref": aid} for aid in order]
+            notes.append(f"{', '.join(order)} (re-added to {role.get('company')})")
+            touched = True
+            continue
+
+        kept_ids = [a.get("ref") if isinstance(a, dict) else a for a in kept]
+        missing = [aid for aid in order if aid not in kept_ids]
+        if not missing:
+            continue
+
+        merged = list(kept)
+        for aid in missing:
+            # Master-relative position, anchored on the last kept bullet the
+            # master places before it — so restoring several adjacent bullets
+            # reproduces the master's own sequence rather than reversing them.
+            anchor = None
+            for pos in range(len(merged) - 1, -1, -1):
+                other = merged[pos].get("ref") if isinstance(merged[pos], dict) else merged[pos]
+                if other in rank and rank[other] < rank[aid]:
+                    anchor = pos
+                    break
+            merged.insert(0 if anchor is None else anchor + 1, {"ref": aid})
+        sel["achievements"] = merged
+        notes.append(f"{', '.join(missing)} (re-added to {role.get('company')})")
+        touched = True
+
+    # --- whole roles the drafter dropped -----------------------------------
+    present = [s.get("ref") if isinstance(s, dict) else s for s in roles]
+    dropped = [rid for rid in role_ids if rid not in present]
+    if dropped:
+        merged_roles = list(roles)
+        for rid in dropped:
+            anchor = None
+            for pos in range(len(merged_roles) - 1, -1, -1):
+                entry = merged_roles[pos]
+                other = entry.get("ref") if isinstance(entry, dict) else entry
+                if other in role_rank and role_rank[other] < role_rank[rid]:
+                    anchor = pos
+                    break
+            # No `achievements` key: see the docstring — absent means all of them.
+            merged_roles.insert(0 if anchor is None else anchor + 1, {"ref": rid})
+        tailored_data = dict(tailored_data)
+        tailored_data["experience"] = merged_roles
+        notes += [f"{by_id[rid].get('company')} (role re-added, with every achievement)"
+                  for rid in dropped]
+        touched = True
+
+    return (tailored_data, notes) if touched else (tailored_data, [])
 
 
 DRAFT_MAX_TOKENS = 4096
@@ -617,12 +764,15 @@ DRAFT_SCHEMA = {
 DRAFT_SYSTEM = """You are tailoring a CV for one specific job application.
 
 You work with a repository that separates FACTS from PRESENTATION, and your job is to \
-select and present facts that already exist. You are not writing a CV from scratch.
+present facts that already exist, in this posting's words. You are not writing a CV from \
+scratch.
 
 THE MODEL
 - The MASTER CV given to you is the FACT BASE. It holds every role, achievement and skill \
 the candidate actually has. It is the only source of truth available to you.
-- What you write is a SELECTION over it: it selects, reorders and rewords. It never adds.
+- What you write is a PRESENTATION of it: it reorders, rewords, and prunes skill items. It \
+never adds a fact, and it never drops an experience bullet. Rules 1 and 5 below say how far \
+each of those goes.
 
 THE FIVE HARD RULES — violating any of these makes the output worse than useless, because \
 it produces a CV that wins a screening and collapses in an interview.
@@ -640,10 +790,13 @@ work they did not do is fabrication. Example of correct: master says "results tr
 Datadog dashboards", posting says "observability dashboards" — writing "results tracked in \
 Datadog observability dashboards" is the SAME FACT in the posting's vocabulary. Example of \
 fabrication: turning that into "built an observability platform".
-5. Select AGGRESSIVELY. A focused CV beats a comprehensive one. The most relevant \
-achievement goes FIRST under the current role, because the first bullet is the one that \
-gets read — even when it is not the most impressive in the abstract. Drop roles and bullets \
-that do not serve this application.
+5. REORDER AND REWORD — DO NOT SELECT. Every role in the master stays, and every \
+achievement under each role stays. Your tailoring is the ORDER — the achievement that best \
+answers this posting goes FIRST under the current role, because the first bullet is the one \
+that gets read, even when it is not the most impressive in the abstract — and the WORDING, \
+where the posting's own noun is a truer name for work the candidate already did. An \
+achievement you leave out is restored automatically before the CV is rendered, so dropping \
+one does not shorten the CV; it only costs you the chance to place it well.
 
 THE ONE MISTAKE THAT MATTERS MOST — DO NOT ADOPT THE EMPLOYER'S WORLD
 
@@ -709,6 +862,8 @@ experience:
   - ref: <a master role id>
     achievements:
       - ref: <a master achievement id>
+      # EVERY master achievement for this role, listed once. Order them with the
+      # most relevant first — the order is the tailoring.
       - ref: <another>
         text: >
           # optional: the SAME fact reworded into the posting's vocabulary
@@ -751,6 +906,26 @@ its signature items exist.
 
 For every OTHER master group, include it when it serves this posting and omit it when it \
 genuinely does not — eight focused groups beat eleven unfocused ones.
+
+WHICH EXPERIENCE TO INCLUDE — every role, every bullet
+
+This is the opposite rule to the one above, and the difference is deliberate. A skill group is \
+a catalogue, so choosing between items is real editorial work. An experience bullet is a FACT \
+about what the candidate did, so leaving one out does not sharpen the CV, it deletes a claim \
+they were entitled to make.
+
+  * Every role in the master appears. All of them.
+  * Every achievement under every role appears. List each one as `- ref: <id>`.
+  * Two things are yours to decide: WHICH BULLET GOES FIRST under each role, and WHERE the \
+posting's vocabulary genuinely improves a bullet's wording. That is the tailoring. Nothing else \
+about the experience section is yours to change.
+  * Do not reason that a bullet "does not serve this posting" and drop it. The bullets that go \
+missing that way are the process, quality and leadership ones — and three of the master's four \
+numbers are in exactly those. A bullet you leave out is RESTORED automatically, so a drop never \
+produces a shorter CV; it produces the same CV with your judgement silently overridden, which \
+is worse for you and for the candidate.
+  * There is NO length budget here. The CV is expected to be comprehensive, and `- ref: <id>` \
+costs you almost nothing to write.
 
 Do not include `education`, `certifications` or `projects` unless you have a reason to \
 change them — omitting them uses the master's values verbatim. Do not include a `job:` key; \
@@ -990,8 +1165,8 @@ MASTER CV — THE FACT BASE. Every `ref` you write must be an id below.
 Submit the tailored CV via submit_tailored_cv."""
 
 
-def _reserialise_with_groups(data: dict, original_text: str) -> str:
-    """The draft as YAML text with re-inserted skill groups written back in.
+def _reserialise_with_required(data: dict, original_text: str) -> str:
+    """The draft as YAML text with re-inserted skill groups and experience in it.
 
     The drafter returns the document as a STRING, and that string is what gets
     stored, shown to the user and rendered — so a change made to the parsed dict
@@ -1006,8 +1181,8 @@ def _reserialise_with_groups(data: dict, original_text: str) -> str:
     verifier independently checks every reword against the master — a stronger
     guarantee than a comment a model wrote about itself.
 
-    Nothing is rebuilt when the drafter already included every required group, so
-    a compliant draft keeps its comments verbatim."""
+    Nothing is rebuilt when the drafter already included every required group,
+    role and bullet, so a compliant draft keeps its comments verbatim."""
     return yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=100) or original_text
 
 
@@ -1083,8 +1258,10 @@ def draft_cv(job: dict, posting: str, gap_report: str, provider=None,
     the selection wrong, and failing a whole run over it would be the wrong
     trade. A retry that also fails raises, so a model that simply cannot emit
     YAML fails loudly instead of producing an empty CV."""
-    provider = provider or llm_providers.build_provider(
-        _env_choice(DRAFT_PROVIDER_ENV, DEFAULT_DRAFT_PROVIDER))
+    provider = _as_provider(provider)
+    if provider is None:
+        provider = llm_providers.build_provider(
+            _env_choice(DRAFT_PROVIDER_ENV, DEFAULT_DRAFT_PROVIDER))
     master_yaml = master_for_prompt()
     master_data = load_master_data()
     user_content = build_draft_prompt(job, posting, gap_report, master_yaml, feedback,
@@ -1101,17 +1278,25 @@ def draft_cv(job: dict, posting: str, gap_report: str, provider=None,
             try:
                 data = parse_drafted_yaml(result.get("tailored_yaml") or "")
                 # Enforcement, not a request: the drafter drops the AI and
-                # local-LLM groups unless something holds them in place. Applied
-                # here so BOTH the stored YAML and the preview show the same
-                # document — correcting it later, at render time, would mean the
-                # YAML a user approves is not the YAML that gets rendered.
+                # local-LLM groups, and whole roles and bullets with them, unless
+                # something holds them in place. Applied here so BOTH the stored
+                # YAML and the preview show the same document — correcting it
+                # later, at render time, would mean the YAML a user approves is
+                # not the YAML that gets rendered.
+                #
+                # Two passes and one list, because the caller re-serialises when
+                # ANYTHING was restored: the drafter returns a YAML STRING, so a
+                # correction made to the parsed dict is invisible in the text
+                # that gets stored, shown and rendered unless it is written back.
                 data, readded = merge_required_groups(data, master_data)
+                data, readded_experience = merge_required_experience(data, master_data)
+                readded = readded + readded_experience
                 yaml_text = result.get("tailored_yaml") or ""
                 if readded:
-                    yaml_text = _reserialise_with_groups(data, yaml_text)
+                    yaml_text = _reserialise_with_required(data, yaml_text)
                 return {"data": data, "report": (result.get("report") or "").strip(),
                         "provider": provider.name, "model": provider.model,
-                        "yaml_text": yaml_text, "readded_groups": readded}
+                        "yaml_text": yaml_text, "readded": readded}
             except TailorError as exc:
                 last_error = str(exc)
         if attempt < max_retries:
@@ -1524,25 +1709,65 @@ def _env_choice(env_name: str, default: str) -> str:
     return (os.environ.get(env_name) or default).strip().lower()
 
 
-def preflight(need_draft: bool = True) -> list[str]:
+def _provider_name(explicit) -> str:
+    """The NAME of the provider that will draft — 'local', 'deepseek', 'anthropic'.
+
+    `explicit` arrives in two shapes, and which one it is says nothing about
+    intent: the CLI's `--provider` supplies a name, while the escalation passes
+    an already-built provider object. `None` means "no override", i.e. whatever
+    CV_DRAFT_PROVIDER says. Every caller that has to reason about WHICH provider
+    runs — the preflight checks below — goes through here so the flag and the
+    environment variable cannot disagree."""
+    if explicit is None:
+        return _env_choice(DRAFT_PROVIDER_ENV, DEFAULT_DRAFT_PROVIDER)
+    if isinstance(explicit, str):
+        return explicit.strip().lower()
+    return (getattr(explicit, "name", "") or "").strip().lower()
+
+
+def _as_provider(explicit):
+    """A provider OBJECT for `explicit`, or None meaning "build it from the env".
+
+    This exists because `--provider deepseek` used to reach `draft_cv` as the
+    STRING 'deepseek', where `provider or build_provider(...)` kept it and the
+    first model call failed with "AttributeError: 'str' object has no attribute
+    'complete'" — a documented flag that could only ever crash. Building here
+    also means a bad name or a missing key is reported as a ProviderError
+    sentence, which is what both the CLI and the web route know how to show."""
+    if isinstance(explicit, str):
+        return llm_providers.build_provider(explicit) if explicit.strip() else None
+    return explicit
+
+
+def preflight(need_draft: bool = True, draft_provider=None) -> list[str]:
     """Blocking problems, as sentences. Empty list means go.
 
     Checked BEFORE any model call so a misconfiguration costs nothing and says
     what to do. The local-server check is the one that matters most in practice:
     a stopped llama-server otherwise surfaces as a connection error several
-    seconds into a request the UI is waiting on."""
+    seconds into a request the UI is waiting on.
+
+    `draft_provider` is the SAME override `preview` was given, so these checks
+    describe the run that is actually about to happen. Reading the environment
+    variable instead made `--provider deepseek` demand a running llama-server it
+    was never going to call — the override could not be used to get out of the
+    situation it exists for."""
     problems: list[str] = []
     if not MASTER_PATH.exists():
         problems.append(f"No master CV at {MASTER_PATH}.")
     if not VENV_PY.exists():
         problems.append(f"No virtualenv at {VENV_PY} — see the note in _run_script.")
-    if need_draft and _env_choice(DRAFT_PROVIDER_ENV, DEFAULT_DRAFT_PROVIDER) == "local":
+    if need_draft and _provider_name(draft_provider) == "local":
         problem = llm_providers.check_local_available()
         if problem:
             problems.append(problem)
     try:
         if need_draft:
-            llm_providers.build_provider(_env_choice(DRAFT_PROVIDER_ENV, DEFAULT_DRAFT_PROVIDER))
+            # A provider handed over as an object is already built; a name still
+            # has to become one, and that is where an unknown name or a missing
+            # key is turned into a sentence.
+            if _as_provider(draft_provider) is None:
+                llm_providers.build_provider(_provider_name(draft_provider))
         llm_providers.build_provider(_env_choice(VERIFY_PROVIDER_ENV, DEFAULT_VERIFY_PROVIDER))
     except llm_providers.ProviderError as exc:
         problems.append(str(exc))
@@ -1855,7 +2080,7 @@ def preview(conn, url: str, feedback: str | None = None, include_interview_prep:
     for whether cv/master.yaml is missing something real. That last one is the
     documented trigger for updating the master, and it is surfaced rather than
     acted on: only a human can say whether a term describes work they did."""
-    problems = preflight(need_draft=True)
+    problems = preflight(need_draft=True, draft_provider=draft_provider)
     if problems:
         raise TailorError("Cannot tailor a CV yet:\n- " + "\n- ".join(problems))
 
@@ -1949,6 +2174,14 @@ def preview(conn, url: str, feedback: str | None = None, include_interview_prep:
             raise TailorError(
                 "The tailored draft was rejected by the CV engine, so no coverage could be "
                 "measured and nothing was written:\n" + str(after["error"])[:700])
+        # Read the markdown HERE, while the scratch dir still exists. The `finally`
+        # below deletes it, and the payload used to call _read_report() at return
+        # time — i.e. after the file was gone — so `gap_report` was ALWAYS the
+        # empty string and the web preview's gap panel rendered nothing. The
+        # coverage FIGURES survived (they are parsed from the file before the
+        # delete), which is what made this look like a UI bug rather than a
+        # pipeline one.
+        after_markdown = _read_report(after)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -1976,6 +2209,11 @@ def preview(conn, url: str, feedback: str | None = None, include_interview_prep:
         # to one that never happened, and the user would be told nothing about
         # the cloud call that was made on their behalf and why it did not help.
         attempts=json.dumps(attempts),
+        # Stored, not just returned, and for the same reason as `attempts`: what
+        # the code put back is the only explanation for a CV that carries more
+        # than the drafter's own `report` says it selected. The report and the
+        # document would otherwise disagree with no way to tell why.
+        readded=json.dumps(draft.get("readded") or []),
         master_coverage=before.get("master_coverage"),
         tailored_coverage=after.get("tailored_coverage"),
         error=None,
@@ -1997,10 +2235,15 @@ def preview(conn, url: str, feedback: str | None = None, include_interview_prep:
         # escalation looks like the local model's work when it is not — and the
         # point of escalating is defeated if the user cannot tell it happened.
         "attempts": attempts,
+        # What the code restored from the master, so the preview's `readded`
+        # list can say the draft was corrected rather than letting a code-level
+        # fix pass as the model's judgement — a distinction that matters most on
+        # a draft whose own report describes a selection the pipeline overrode.
+        "readded": draft.get("readded") or [],
         "coverage_before": before.get("master_coverage"),
         "coverage_after": after.get("tailored_coverage"),
         "priority_gaps": after.get("priority_gaps"),
-        "gap_report": _read_report(after),
+        "gap_report": after_markdown,
         "interview_prep_md": interview_prep_md,
         "posting_available": bool(posting),
     }
@@ -2206,6 +2449,211 @@ def _validate_against_master(data: dict) -> str | None:
 # CLI — how the web app drives this
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# The ATS scan — what replaced per-posting tailoring (Ed, 2026-10-01)
+# ---------------------------------------------------------------------------
+#
+# The two functions below are the whole new flow: read the CV Ed actually
+# maintains, read the posting, and answer "would this pass, and is there real
+# experience missing from it that would help". The reasoning lives in
+# app/ats_scan.py; what belongs HERE is the wiring — where the master comes
+# from, what is persisted, and which of the drafting pipeline's guards still
+# apply (most do not, because nothing here calls a model).
+
+# How much longer a sibling advert's text must be before it is worth offering as
+# "scan this copy instead". Small enough to catch a 500-character teaser against
+# a 6,000-character advert; large enough that two equally thin scrapes of the
+# same posting do not ping-pong the user between them.
+MIN_BETTER_SOURCE_GAIN = 600
+
+
+def _master_fact_text() -> str:
+    """Everything cv/master.yaml can legitimately claim, flattened to text.
+
+    This is the OTHER side of the scan's central comparison. `posting terms the
+    CV misses` minus `posting terms the master covers` is exactly the set of
+    requirements more of Ed's own record would answer — so the master has to be
+    indexed as text, by the same matcher, or the difference means nothing.
+
+    Uses the engine's own `Master.all_fact_text` rather than re-flattening the
+    YAML here: skill items, achievement tags and metrics all count as claimable
+    there, and a second implementation would drift from the first — which would
+    show up as suggestions that cannot be justified, or gaps that cannot be
+    closed."""
+    sys.path.insert(0, str(SCRIPTS))
+    try:
+        import model  # type: ignore
+        return model.Master.load(MASTER_PATH).all_fact_text()
+    finally:
+        sys.path.pop(0)
+
+
+def scan_posting(conn, url: str, *, refresh_master: bool = False) -> dict:
+    """ATS-scan the master CV against one posting, and say what to add to it.
+
+    Deliberately NOT routed through `preflight`. That function exists to make
+    sure the drafting pipeline can run, and among other things it insists that
+    a verify provider is buildable — which means a DeepSeek key. A scan makes
+    NO model call at all: it is keyword arithmetic over two pieces of text. The
+    checks that remain are the two things it genuinely cannot work without, and
+    both are sentences rather than an ImportError three frames down."""
+    if not MASTER_PATH.exists():
+        raise TailorError(
+            f"No master CV at {MASTER_PATH}. The scan needs the fact bank to tell "
+            f"'experience you have but are not showing' from 'experience you do not have'."
+        )
+    job = load_job(conn, url)
+    posting = _post_text(job)
+    if not posting.strip():
+        # `_post_text` returns "" only when the stored page was an Adzuna results
+        # page with no recoverable advert body (see jd_text). Scanning the empty
+        # string would report every term as a gap and blame the CV for it.
+        raise TailorError(
+            "No usable posting text is stored for this job, so there is nothing to scan "
+            "against — the stored page is a search-results listing rather than the advert. "
+            "Re-fetch the posting, or add its text, first."
+        )
+
+    try:
+        cv = gdoc.master_cv_text(force=refresh_master)
+    except gdoc.GDocError as exc:
+        raise TailorError(str(exc)) from exc
+
+    result = ats_scan.scan(
+        job=job,
+        posting_text=posting,
+        cv_text=cv["text"],
+        master_text=_master_fact_text(),
+        master_data=load_master_data(),
+        # `looks_truncated` is the pipeline's own test, reused rather than
+        # re-derived: it is what ai_evaluate already uses to tell the model "this
+        # is a snippet, do not score the missing parts against the candidate".
+        # The scan faces the identical hazard, so it faces it with the identical
+        # signal.
+        posting_truncated=filters.looks_truncated(job.get("description") or ""),
+        cv_source={
+            "kind": cv.get("source"),
+            "cached_from": cv.get("cached_source"),
+            "doc_id": cv.get("doc_id"),
+            "fetched_at": cv.get("fetched_at"),
+            "stale": bool(cv.get("stale")),
+            "age_hours": cv.get("age_hours"),
+            "reason": cv.get("cache_reason"),
+            "chars": len(cv.get("text") or ""),
+        },
+    )
+    # When the scan cannot judge, say what WOULD let it. The board routinely
+    # holds the same job twice — once from the employer's own ATS with the full
+    # advert, once from Adzuna with a 500-character teaser — and app/duplicates.py
+    # has already linked the two. Naming the better copy is the difference
+    # between "cannot assess" and a dead end.
+    if not (result.get("ats") or {}).get("reliable"):
+        result["better_source"] = _better_sibling(conn, url)
+
+    _store_scan(conn, url, result)
+    return result
+
+
+def _better_sibling(conn, url: str) -> dict | None:
+    """Another advert of the SAME job whose stored text is usable.
+
+    Reads the duplicate cluster exactly as the board does — the root is
+    `COALESCE(duplicate_of, url)` and the members are the root plus everything
+    pointing at it — so the rule for what counts as the same job stays in
+    app/duplicates.py and is not re-implemented here (the same discipline
+    web/lib/db.ts's status inheritance follows).
+
+    Requires a real improvement, not merely a longer string: a few hundred extra
+    characters of navigation boilerplate is not a better advert, and offering it
+    as the fix would send the user to a page that fails the same way."""
+    row = conn.execute(
+        "SELECT COALESCE(duplicate_of, url), LENGTH(COALESCE(description, '')) "
+        "FROM job_details WHERE url = ?", (url,)).fetchone()
+    if row is None:
+        return None
+    root, current_len = row
+    best = conn.execute(
+        """SELECT url, company, title, source, LENGTH(COALESCE(description, '')) AS chars
+           FROM job_details
+           WHERE (url = ? OR duplicate_of = ?) AND url <> ?
+             AND passed_filters = 1
+           ORDER BY chars DESC LIMIT 1""",
+        (root, root, url)).fetchone()
+    if best is None:
+        return None
+    best_url, company, title, source, chars = best
+    if not chars or chars < (current_len or 0) + MIN_BETTER_SOURCE_GAIN:
+        return None
+    return {"url": best_url, "company": company, "title": title,
+            "source": source, "chars": chars}
+
+
+def _store_scan(conn, url: str, result: dict) -> None:
+    """Persist the scan, and never let a storage problem lose the answer.
+
+    The scan is computed from the Doc and the posting, both of which the caller
+    already has in hand; the row is what makes it appear on the board the next
+    time the page loads. A failure to write it is therefore a degraded feature
+    rather than a failed request, so it is recorded in the same `error` column a
+    failed scan would use, and the caller still gets its result."""
+    ats = result.get("ats") or {}
+    projection = result.get("projection") or {}
+    source = result.get("cv_source") or {}
+    try:
+        dedup.save_scan(
+            conn, url,
+            verdict=ats.get("verdict"),
+            coverage=ats.get("priority_coverage"),
+            projected_coverage=projection.get("coverage"),
+            hard_gaps=len(ats.get("hard_gaps") or []),
+            suggestion_count=len(result.get("suggestions") or []),
+            cv_source=source.get("kind"),
+            cv_fetched_at=source.get("fetched_at"),
+            cv_stale=1 if source.get("stale") else 0,
+            scan=json.dumps(result),
+            error=None,
+        )
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        try:
+            dedup.save_scan(conn, url, error=f"Scan ran but could not be stored: {exc}")
+            conn.commit()
+        except Exception:
+            pass
+
+
+def master_doc_status(*, refresh: bool = False) -> dict:
+    """What the configured Google Doc currently gives us, for `master-doc`.
+
+    A separate command rather than a side effect of scanning, because this is
+    the one step that can fail for reasons unrelated to any job: an unshared
+    Doc, a missing key file, an expired credential. Diagnosing that should not
+    require picking a posting first."""
+    try:
+        cv = gdoc.master_cv_text(force=refresh)
+    except gdoc.GDocError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "doc_id": gdoc.configured_doc_id(),
+            "service_account_file": os.environ.get(gdoc.SERVICE_ACCOUNT_ENV),
+            "cache_path": str(gdoc.cache_path()),
+        }
+    return {
+        "ok": True,
+        "source": cv.get("source"),
+        "cached_from": cv.get("cached_source"),
+        "doc_id": cv.get("doc_id"),
+        "fetched_at": cv.get("fetched_at"),
+        "stale": bool(cv.get("stale")),
+        "age_hours": cv.get("age_hours"),
+        "reason": cv.get("cache_reason"),
+        "chars": len(cv.get("text") or ""),
+        "lines": len([ln for ln in (cv.get("text") or "").splitlines() if ln.strip()]),
+        "headline": next((ln for ln in (cv.get("text") or "").splitlines() if ln.strip()), ""),
+    }
+
+
 def _emit(payload: dict) -> None:
     """One JSON object on stdout, always, so the caller parses one thing.
 
@@ -2225,7 +2673,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--feedback", default=None,
                    help="Regenerate using this critique (e.g. the verifier's required_fixes).")
     p.add_argument("--interview-prep", action="store_true")
-    p.add_argument("--provider", default=None, help="Override the drafting provider.")
+    p.add_argument("--provider", default=None,
+                   help="Which provider drafts: local, deepseek or anthropic. "
+                        "Defaults to CV_DRAFT_PROVIDER, else local. Verification is "
+                        "unaffected — set CV_VERIFY_PROVIDER for that half.")
 
     r = sub.add_parser("render", help="Write and render the approved CV.")
     r.add_argument("--url", required=True)
@@ -2237,6 +2688,20 @@ def main(argv: list[str] | None = None) -> int:
 
     m = sub.add_parser("master-status", help="Counts and placeholder state for cv/master.yaml.")
     m.add_argument("--json", action="store_true")
+
+    # --- the ATS scan: what the Scan CV button calls (Ed, 2026-10-01) ---------
+    sc = sub.add_parser("scan",
+                        help="ATS-scan the master CV against one posting and list the "
+                             "experience worth adding to it. No model call, no cost.")
+    sc.add_argument("--url", required=True)
+    sc.add_argument("--refresh-master", action="store_true",
+                    help="Re-read the Google Doc instead of using the cached copy.")
+
+    md = sub.add_parser("master-doc",
+                        help="Check the master CV Google Doc is reachable, and say which "
+                             "copy of it a scan would read.")
+    md.add_argument("--refresh", action="store_true",
+                    help="Ignore the cache and fetch the Doc now.")
 
     ls = sub.add_parser("lessons",
                         help="What the drafter has been taught from its own proven mistakes.")
@@ -2274,9 +2739,21 @@ def main(argv: list[str] | None = None) -> int:
             _emit({"ok": False, "error": str(exc)})
             return 1
 
+    if args.cmd == "master-doc":
+        # Deliberately outside the `with dedup.connect()` block below: this reads
+        # a Google Doc, not the database, and opening a 130MB SQLite file to
+        # answer "is my key file in the right place?" would make the diagnostic
+        # command fail for reasons unrelated to what it is diagnosing.
+        status = master_doc_status(refresh=args.refresh)
+        _emit(status)
+        return 0 if status.get("ok") else 1
+
     with dedup.connect() as conn:
         try:
-            if args.cmd == "preview":
+            if args.cmd == "scan":
+                result = scan_posting(conn, args.url, refresh_master=args.refresh_master)
+                _emit({"ok": True, **result})
+            elif args.cmd == "preview":
                 result = preview(conn, args.url, feedback=args.feedback,
                                  include_interview_prep=args.interview_prep,
                                  draft_provider=args.provider)
@@ -2294,6 +2771,19 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         except llm_providers.ProviderError as exc:
             _emit({"ok": False, "error": str(exc)})
+            return 1
+        except Exception as exc:  # noqa: BLE001
+            # The one-JSON-object contract has to hold even when this code is
+            # buggy. A traceback on stdout leaves the caller parsing nothing and
+            # reporting "the command produced no JSON", which hides the actual
+            # error (this was found for real: an AttributeError in ats_scan
+            # surfaced in the UI as an empty response). The traceback still goes
+            # to stderr, so the bug is fully diagnosable; what changes is that
+            # the caller is told what happened instead of being told nothing.
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            _emit({"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                   "kind": "internal_error"})
             return 1
 
 

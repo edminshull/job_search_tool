@@ -98,6 +98,19 @@ export default function JobsTable({rows, sortKey, sortDir, onToggleSort, onSelec
                   {CLEARANCE_LABEL[j.clearance_status] ?? j.clearance_status}
                 </span>
               )}
+              {/* The same job advertised again under a new advert id, which the
+                  url and company+title+location keys both miss. Marked here so it
+                  is obvious while scanning rather than only after clicking
+                  through to LinkedIn and reading "Applied" — see
+                  app/duplicates.py. */}
+              {j.duplicate_of && (
+                <span
+                  className="chip dup-chip"
+                  title={`A re-advert of the same job, already stored at ${j.duplicate_of}`}
+                >
+                  re-advert
+                </span>
+              )}
             </td>
             <td className="loc-cell">{j.location}</td>
             <td className={`date-cell ${ageClass(j.age.days)}`} title={listedTitle(j)}>

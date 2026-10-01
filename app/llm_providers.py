@@ -500,8 +500,10 @@ def check_local_available(base_url: str = LOCAL_LLM_BASE_URL, timeout: float = 3
 
     A tailoring run against a stopped local server should fail with "start
     llama-server" rather than a connection-refused traceback from inside a
-    subprocess the web UI is waiting on. Callers use this to fail fast and
-    usefully, and the UI surfaces the returned sentence verbatim."""
+    subprocess. Callers use this to fail fast and usefully, and the sentence is
+    surfaced verbatim — by the CLI's own preflight, which is now the only caller:
+    the ATS scan replaced the board's drafting flow on 2026-10-01 and makes no
+    model call at all, so nothing in the web app reaches this."""
     try:
         resp = httpx.get(f"{base_url.rstrip('/')}/v1/models", timeout=timeout)
     except httpx.HTTPError as exc:

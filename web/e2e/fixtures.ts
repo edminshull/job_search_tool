@@ -13,12 +13,17 @@ import path from "node:path";
  *
  * The board (see e2e/scripts/make-fixture-db.mjs for the full cast):
  *
- *   12 stored (all passed_filters = 1)
- *   10 visible under the default 30-day window, 2 hidden by it
- *    8 AI-evaluated → 4 apply, 3 consider, 1 skip, 4 not evaluated
- *    1 contract, 2 permanent, 9 with no employment type declared
- *    4 language priority, 1 secondary, 7 naming no language
- *    1 row with a My status ("applied"), 2 rows with CV state
+ *   14 stored (all passed_filters = 1), and all 14 shown by DEFAULT — the
+ *      date window is now "All dates" (see lib/dates.ts's DEFAULT_DATE_WINDOW),
+ *      so nothing is hidden until the user narrows it
+ *   12 visible under "Last month" (30 days), 2 hidden by it
+ *   10 AI-evaluated → 4 apply, 5 consider, 1 skip, 4 not evaluated
+ *    3 contract, 11 kept by "permanent" (permanent + unknown)
+ *    6 language priority, 7 priority+, 7 naming a language at all
+ *    3 rows with a My status ("applied"), 2 rows with CV state
+ *    3 rows with a stored ATS scan: pass (Northwind), fail (Bluepeak),
+ *      inconclusive (Coastal — its stored text is a snippet)
+ *    2 rows of one re-advert pair (see duplicates.spec.ts)
  */
 // Playwright transpiles these spec files to CommonJS (package.json has no
 // "type": "module"), so `__dirname` is the correct way to locate a sibling file
@@ -29,25 +34,58 @@ const FIXTURE_SCRIPT = path.join(__dirname, "scripts", "make-fixture-db.mjs");
 
 export const BOARD = {
   /** Every row in job_details with passed_filters = 1 — the board's denominator. */
-  total: 12,
-  /** Rows the default 30-day window shows. */
-  visible: 10,
-  /** Rows the default 30-day window hides (31 days, and 200 days, never re-listed). */
-  hiddenByDate: 2,
+  total: 14,
+  /** Rows the DEFAULT window shows. It is "All dates", so this is every row:
+   *  the recency window is an opt-in filter, not a hidden default limit. */
+  visible: 14,
+  /** Rows "Last month" (30 days) shows — the boundary test's narrowed board. */
+  visibleLastMonth: 12,
+  /** Rows "Last month" (30 days) hides: the 31-day and the 200-day posting,
+   *  neither of them re-listed. The undated row is ALWAYS kept. */
+  hiddenByLastMonth: 2,
+  /** Rows with no AI score, which the sort tests expect to sink to the bottom. */
+  unscored: 4,
 } as const;
 
-/** Counts per toolbar filter, under the DEFAULT date window unless noted. */
+/** Counts per toolbar filter, under the DEFAULT "All dates" window. */
 export const FILTER_EXPECTATIONS = {
-  typeContract: 1,       // Northwind Digital
-  typePermanent: 9,      // permanent (2) + unknown (9) − the contract row, of 10 visible
-  languagePriority: 4,   // Northwind, Trading House, Ghost Files, Defence Systems
-  languagePriorityPlus: 5, // + Bluepeak (JS/Node secondary)
-  languageKnown: 5,      // same as priority+ : "no language named" is excluded
+  typeContract: 3,       // Northwind Digital + both Experis adverts of one job
+  typePermanent: 11,     // permanent (2) + unknown (9) − the contract rows
+  languagePriority: 6,   // Northwind, Trading House, Ghost Files, Defence + both Experis
+  languagePriorityPlus: 7, // + Bluepeak (JS/Node secondary)
+  languageKnown: 7,      // same as priority+ : "no language named" is excluded
   aiApply: 4,
-  aiConsider: 3,
+  aiConsider: 5,         // includes both Experis adverts of one job
   aiSkip: 1,
-  aiNotEvaluated: 2,     // of 4; the other two are hidden by the date window
-  myStatusApplied: 1,    // Bluepeak — the only row with a My status
+  aiNotEvaluated: 4,     // Fresh Start, Legacy (undated), Just Past, Antique
+  myStatusApplied: 3,    // Bluepeak + both Experis adverts (one of them inherited)
+} as const;
+
+/** The stored ATS scans, addressed by the row they belong to. The numbers are
+ *  the fixture's own `cv_scans` columns (joined onto the board as the `cv_ats_*`
+ *  fields), so a spec asserting a board chip and a spec asserting the open panel
+ *  are asserting the same scan — and a change to the fixture cannot leave one
+ *  asserting yesterday's number. */
+export const SCAN = {
+  /** Northwind Digital — pass, 88% priority-term coverage (22 of 25), no gaps. */
+  pass: {
+    company: "Northwind Digital", verdict: "pass", coverage: 88,
+    evidenced: 22, total: 25,
+    chip: { label: "CV would pass", tone: "ok" },
+  },
+  /** Bluepeak Software — fail: 2 hard gaps, 1 closable suggestion, 1 unclosable
+   *  gap, a projection that still fails. */
+  fail: {
+    company: "Bluepeak Software", verdict: "fail", coverage: 54.5, projected: 63.6,
+    hardGaps: 2, suggestions: 1,
+    chip: { label: "CV would be filtered", tone: "bad" },
+  },
+  /** Coastal Systems — cannot tell: the stored text is a 52-char snippet, so the
+   *  scan refuses a verdict rather than inventing one. */
+  inconclusive: {
+    company: "Coastal Systems", verdict: "unknown", coverage: 100,
+    chip: { label: "CV scan inconclusive", tone: "unev" },
+  },
 } as const;
 
 /** The rows the default sort (Score, descending) puts first. */
@@ -82,9 +120,15 @@ export const ROW = {
 export const URLS = {
   northwind: "https://fixtures.test/jobs/northwind-senior-test-automation",
   bluepeak: "https://fixtures.test/jobs/bluepeak-qa-automation",
+  coastal: "https://fixtures.test/jobs/coastal-test-analyst",
   ghostFiles: "https://fixtures.test/jobs/ghost-files-senior-qa",
   draftPartners: "https://fixtures.test/jobs/draft-partners-qa",
   freshStart: "https://fixtures.test/jobs/fresh-start-automation",
+  /** The re-advert pair: the same job advertised twice, the shorter stored text
+   *  being the re-advert. app/duplicates.py links them, which is what makes the
+   *  scan panel able to offer "scan the fuller copy" at all. */
+  experisReadvert: "https://fixtures.test/jobs/experis-ai-automation-tester",
+  experisOriginal: "https://fixtures.test/jobs/experis-ai-automation-tester-x2",
 } as const;
 
 /**
@@ -134,24 +178,46 @@ export async function badgeCounts(page: Page): Promise<[number, number]> {
 
 /** Open the detail panel for the row belonging to `company`.
  *
- * `#panel:not(.tailor-panel)` rather than `#panel`, because the tailoring
- * overlay reuses the `#panel` id and both can be mounted at once — the detail
- * panel stays open underneath while a CV is drafted. An unscoped `#panel`
- * locator would match two elements and fail in strict mode the moment a
- * tailoring overlay opens. */
+ * `#panel:not(.tailor-panel)` rather than `#panel`, because the CV-scan overlay
+ * reuses the `#panel` id and both can be mounted at once — the detail panel stays
+ * open underneath while a scan is shown. An unscoped `#panel` locator would match
+ * two elements and fail in strict mode the moment the scan overlay opens. */
 export async function openPanelFor(page: Page, company: string): Promise<void> {
   await rows(page).filter({ hasText: company }).first().click();
   await expect(page.locator("#panel:not(.tailor-panel)")).toBeVisible();
 }
 
-/** The detail panel (never the tailoring overlay). */
+/** Open the detail panel for the row whose TITLE cell matches exactly.
+ *
+ * Needed because the fixture deliberately stores the same job twice under one
+ * employer (the Experis re-advert pair), so `openPanelFor`'s company match is
+ * ambiguous between them and `.first()` would silently address whichever of the
+ * two the current sort happened to put first. */
+export async function openPanelForTitle(page: Page, title: string): Promise<void> {
+  await rows(page)
+    .filter({has: page.locator(".title-text", {hasText: new RegExp(`^${title}$`)})})
+    .first()
+    .click();
+  await expect(page.locator("#panel:not(.tailor-panel)")).toBeVisible();
+}
+
+/** The detail panel (never the scan overlay). */
 export function detailPanel(page: Page) {
   return page.locator("#panel:not(.tailor-panel)");
 }
 
-/** The tailoring overlay's panel. */
-export function tailorPanel(page: Page) {
-  return page.locator(".tailor-panel");
+/** The scan overlay's wrapper — present for both its loading state and the panel. */
+export function scanOverlay(page: Page) {
+  return page.locator(".tailor-overlay");
+}
+
+/** The scan overlay's own panel, once the stored scan has arrived.
+ *
+ * `#panel.scan-panel` rather than `.tailor-panel` alone: the loading state that
+ * precedes it renders a `#panel.tailor-panel` with no `scan-panel` class, and a
+ * spec that matched both would be asserting against the wrong phase. */
+export function scanPanel(page: Page) {
+  return page.locator("#panel.scan-panel");
 }
 
 /** The toolbar control, addressed by its visible label. */

@@ -43,6 +43,25 @@ export type CvToolResult =
   | { ok: true; data: Record<string, unknown> }
   | { ok: false; error: string };
 
+export type ScanRequest = {
+  url: string;
+  /** Re-read the Google Doc instead of using the pipeline's cached copy.
+   *  Off by default: the cache exists so a scan does not depend on a network
+   *  call it does not need, and the panel offers a "re-read the Doc" action for
+   *  when the CV has just been edited. */
+  refreshMaster?: boolean;
+};
+
+/** The argv for `cv_tailor.py scan` — the ATS scan that replaced per-posting
+ *  tailoring. Split out of the route because the argv is a contract with a
+ *  Python CLI: a typo in it should be a failing test, not a 502 the user reads
+ *  as "the scan is broken". */
+export function scanArgs(req: ScanRequest): string[] {
+  const args = ["scan", "--url", req.url];
+  if (req.refreshMaster === true) args.push("--refresh-master");
+  return args;
+}
+
 export function runCvTool(args: string[]): CvToolResult {
   const proc = spawnSync(VENV_PYTHON, ["-m", "app.cv_tailor", ...args], {
     cwd: CV_ROOT,

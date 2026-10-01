@@ -156,7 +156,32 @@ export const DATE_WINDOWS: { value: string; label: string; days: number | null }
   { value: "all", label: "All dates", days: null },
 ];
 
-export const DEFAULT_DATE_WINDOW = "30";
+/** The board opens showing EVERY date, and the recency window is opt-in.
+ *
+ *  This used to be "30", and that default was actively harmful. Measured on the
+ *  real board 2026-10-01: 127 rows passed the filters, all 127 were already
+ *  AI-scored, and the 30-day default hid 25 of them — including
+ *  "Lendable / Senior Quality Engineer - AI" at score 72, the single
+ *  best-scoring row in the whole run that `python -m app.ai_evaluate` had just
+ *  printed to the terminal. The jobs the pipeline had just spent money scoring
+ *  were the jobs the board would not show.
+ *
+ *  The rescue that exists for exactly this (`last_listed_at`, the "still
+ *  advertised" signal) could not save them either: it is NULL on every
+ *  aggregator row by design, and it was NULL on the Lendable and Moneybox board
+ *  rows too, so `listedWithinWindow` had nothing to go on.
+ *
+ *  Three further reasons the window is a bad default here:
+ *    - a scored row is one the pipeline already judged worth your attention, so
+ *      re-hiding it on the employer's own `posted_at` claim — a field this repo
+ *      documents as unreliable and years-stale — is backwards;
+ *    - 127 rows is a browsable table, not a haystack that needs trimming;
+ *    - hiding rows makes "where did my job go?" the default failure mode, and
+ *      the honest fix for that is not to hide them in the first place.
+ *
+ *  The window itself is untouched and still there for when you DO want to
+ *  narrow: it is a filter, not a limit, and "All dates" is simply its default. */
+export const DEFAULT_DATE_WINDOW = "all";
 
 /** Resolve a window value to its number of days, or null for "all dates".
  *
@@ -170,7 +195,12 @@ export const DEFAULT_DATE_WINDOW = "30";
 export function windowDays(value: string): number | null {
   const found = DATE_WINDOWS.find((w) => w.value === value);
   if (found) return found.days;
-  return DATE_WINDOWS.find((w) => w.value === DEFAULT_DATE_WINDOW)?.days ?? 30;
+  // An unrecognised value shows everything rather than silently narrowing.
+  // The failure mode this avoids is the one that cost the board its default in
+  // the first place: a value the code does not recognise quietly hiding rows.
+  // Returning null is also literally what DEFAULT_DATE_WINDOW resolves to, so
+  // there is no second constant to keep in step.
+  return null;
 }
 
 /** True if a posting falls inside the window. Undated postings are always

@@ -33,15 +33,26 @@ profile.yaml
 # "machine documentation" was wrong. It is ignored at the DIRECTORY level for
 # the same reason cv/ is: a new note dropped beside these docs must not reach a
 # public commit by being unlisted.
-cv/
-cv_output/
-context/
+# The three patterns below are ANCHORED with a leading slash, and that is a bug
+# fix rather than tidying (2026-10-01). Unanchored, `cv/` matches a directory
+# named `cv` at ANY depth — and it was silently ignoring
+# `web/app/api/cv/scan/route.ts`, the API route behind the Scan CV button. The
+# file was on disk, the app worked, and `git add` would never have taken it.
+# Anchoring keeps the documented intent exactly as it was (the ROOT cv/ is
+# ignored wholesale, so a new file dropped beside master.yaml cannot slip into a
+# commit by being unlisted) while stopping the pattern reaching into nested
+# paths. `context/` was over-matching the same way, into
+# .venv/**/docker/context/, which was only harmless because .venv/ is ignored
+# above.
+/cv/
+/cv_output/
+/context/
 #
 # contract.yaml joins them for the same reason, from the other direction: it is
 # live config the pipeline reads, but the one personal number in it is the
 # target salary. contract.yaml.example is committed in its place, and is what
 # app/contract_rates.py falls back to, so a fresh clone still runs.
-contract.yaml
+/contract.yaml
 
 # --- QA / E2E -----------------------------------------------------------------
 # Playwright's build output for the test server (see web/next.config.js's
@@ -50,3 +61,14 @@ web/.next-e2e/
 web/e2e/.fixtures/
 web/playwright-report/
 web/test-results/
+
+# --- Google service-account keys ---------------------------------------------
+# The JSON key that reads the master CV Doc (app/gdoc.py, GOOGLE_SERVICE_ACCOUNT_FILE).
+# A credential rather than configuration, ignored by PATTERN as well as by
+# location: this is the kind of file that gets downloaded to a repo root or a
+# scratch folder and committed by accident, and `.env` only covers the variable
+# that names it, not wherever it was saved. `data/` above already covers the
+# CV text cache at data/master_cv.json.
+*-service-account*.json
+service-account*.json
+*.gserviceaccount.json

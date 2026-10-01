@@ -1,27 +1,33 @@
-"""Manually add a job posting to the board — for the ones LinkedIn won't let
-any fetcher reach.
+"""Add a LinkedIn posting to the board from its URL — or from pasted text.
 
-WHY THIS EXISTS
-LinkedIn is where a lot of real postings in this search come from (13 of the
-16 postings in the CV repo are LinkedIn-sourced), but it cannot be fetched:
-LinkedIn restricts job data to approved partners and its terms prohibit
-scraping. So the pipeline's other sources (companies.yaml ATS boards, Adzuna,
-Remotive) are structurally blind to them, and the two halves of this job
-search never meet.
+THE COMMON CASE: just the URL
+-----------------------------
+LinkedIn is where a lot of real postings in this search come from, but it is
+not one of the pipeline's sources: its data is restricted to approved partners,
+so the other fetchers (companies.yaml ATS boards, Adzuna, Remotive) are
+structurally blind to it, and the two halves of this job search would never
+meet. This tool closes that loop.
 
-This closes the loop without scraping anything: you browse LinkedIn as you
-already do, paste what you found, and it lands in the same SQLite store as
-everything else — so it appears on the localhost:3000 board, carries your
-applied/interview/rejected status and notes, and gets scored by the same AI
-step as the pipeline's own finds. No new interface to keep in sync.
+The short form is the one to remember:
 
-The row is written with passed_filters = 1 on purpose: you have already made
-the "is this in scope" judgement by choosing to paste it, and the board only
-shows passed_filters = 1 rows. Whether it would have survived the deterministic
-filters is reported for information, but never blocks the insert.
+    python -m app.add_job --url "https://www.linkedin.com/jobs/view/4471638473"
 
-Usage (run from the repo root):
-    # fields given explicitly — the reliable path
+That reads the posting's public page and takes the company, title, location,
+"posted" age and full advert text from it, then writes the row. See
+`app/linkedin_fetch.py` for what is read, how, and what the fetcher will NOT do
+(it stays anonymous — no login, no session cookie — and does not try to defeat
+a block). A 200 from that endpoint is LinkedIn's own structured markup, so
+those values are authoritative: unlike a *guessed* paste value, they are stored
+without asking you to confirm them with --yes.
+
+WHY PASTING IS STILL HERE
+-------------------------
+Reading the page is best-effort by nature. If LinkedIn has taken the advert
+down (404), serves an auth wall, or rate-limits the request, the fetch reports
+exactly that and you fall back to the paste workflow, which is unchanged:
+
+    # fields given explicitly — the reliable path, and the only one that works
+    # for a posting that is not reachable by URL
     python -m app.add_job --url "https://www.linkedin.com/jobs/view/123456" \\
         --company Resillion --title "Senior Test Automation Analyst" \\
         --location "London (hybrid)" --file ~/Downloads/posting.txt
@@ -37,6 +43,15 @@ Usage (run from the repo root):
     python -m app.add_job --list        # what have I added by hand?
     python -m app.add_job --list --pending   # added but not yet AI-scored
     python -m app.add_job --remove "https://..."
+
+Order of authority, most to least: an explicit flag, then the URL fetch, then a
+labelled line in the paste ("Company: X"), then a --infer guess (which needs
+--yes before it is written).
+
+The row is written with passed_filters = 1 on purpose: you have already made
+the "is this in scope" judgement by choosing to add it, and the board only
+shows passed_filters = 1 rows. Whether it would have survived the deterministic
+filters is reported for information, but never blocks the insert.
 """
 import argparse
 import re
@@ -46,6 +61,7 @@ import sys
 from app import contract_rates
 from app import dedup
 from app import filters
+from app import linkedin_fetch
 
 DEFAULT_SOURCE = "linkedin"
 
@@ -291,6 +307,20 @@ def add_job(conn, *, url, company, title, location, description,
     # more here than for fetched jobs: a LinkedIn advert is often the only
     # place the day rate was ever stated.
     contract_rates.apply_to_job(job)
+    # And the same deterministic screen every pipeline path applies
+    # (`job.update(filters.screening_signals(job))` in main.py/refilter.py/
+    # backfill_derived_fields.py). Without it a manually-added row reached the
+    # board with language_tier and clearance_status NULL, which is not cosmetic:
+    # the board's language filter drops rows whose tier is null, the detail
+    # panel shows no language/clearance chip, and `ai_evaluate` reads the stored
+    # tier instead of re-deriving it. It matters more now than when this tool
+    # only took pastes, because a fetched posting carries the full advert text
+    # these rules read — see app/linkedin_fetch.py.
+    #
+    # This only RECORDS a status; it cannot reject. `clearance_reject_reason` is
+    # what the pipeline drops jobs with, and it is deliberately not called here:
+    # adding the job IS the in-scope judgement (see the module docstring).
+    job.update(filters.screening_signals(job))
     dedup.save_details(conn, job, passed_filters=True)
     dedup.mark_seen(conn, job)  # so a later pipeline run treats it as already seen
     verb = "Updated" if existing else "Added"
@@ -388,6 +418,13 @@ def main():
     ap.add_argument("--stdin", action="store_true", help="Read the posting text from stdin")
     ap.add_argument("--clipboard", action="store_true",
                     help="Read the posting text from the system clipboard (macOS pbpaste)")
+    ap.add_argument("--fetch", dest="fetch", action="store_true", default=None,
+                    help="Read the posting from its LinkedIn URL (see app/linkedin_fetch.py). "
+                         "This is the DEFAULT whenever --url holds a LinkedIn job URL and "
+                         "--company or --title is missing, so `--url` alone is enough; pass "
+                         "--fetch to force it, e.g. to refresh the advert text of a stored row.")
+    ap.add_argument("--no-fetch", dest="fetch", action="store_false",
+                    help="Never touch the network; use only what you pass or paste.")
     ap.add_argument("--infer", action="store_true",
                     help="Infer missing fields from the pasted text (LinkedIn layout)")
     ap.add_argument("--source", default=DEFAULT_SOURCE, help=f"Source label (default {DEFAULT_SOURCE})")
@@ -469,6 +506,57 @@ def main():
             sys.exit("The clipboard is empty — copy the LinkedIn posting text first.")
 
     company, title, location, posted_at = args.company, args.title, args.location, args.posted_at
+
+    # --- read the posting by URL ------------------------------------------
+    #
+    # Auto by default, because that is the whole point of the short form: if
+    # the URL is a LinkedIn job URL and the fields are still missing, there is
+    # nothing to lose by looking (and the alternative is a network-free error
+    # telling the user to go and paste something they can see in a browser).
+    # The gap is filled only where a field is MISSING, so an explicit --title
+    # is never overwritten by the page's title — the same rule --infer follows.
+    fetched: dict = {}
+    employment_type = args.employment_type
+    job_id = linkedin_fetch.job_id_from_url(args.url)
+    if args.fetch is True and not job_id:
+        sys.exit("--fetch reads LinkedIn job URLs only (…/jobs/view/<id>). "
+                 f"For a posting elsewhere, pass the fields or paste the text: {args.url}")
+    want_fetch = args.fetch if args.fetch is not None else bool(job_id) and not (company and title)
+    if want_fetch:
+        if not job_id:
+            sys.exit(f"Could not find a LinkedIn job id in {args.url!r} — expected "
+                     f"…/jobs/view/<id>.")
+        try:
+            fetched = linkedin_fetch.fetch_job(job_id)
+        except linkedin_fetch.LinkedInFetchError as exc:
+            # Reported, not fatal: everything below still works from a paste,
+            # and the missing-field check will name what is actually absent.
+            print(f"Could not read the posting from LinkedIn: {exc}", file=sys.stderr)
+            fetched = {}
+        else:
+            for field, value in (("company", company), ("title", title),
+                                 ("location", location), ("posted_at", posted_at)):
+                if value or not fetched.get(field):
+                    continue
+                if field == "company":
+                    company = fetched[field]
+                elif field == "title":
+                    title = fetched[field]
+                elif field == "location":
+                    location = fetched[field]
+                else:
+                    posted_at = fetched[field]
+            if not text.strip():
+                # Same rule as the fields: a paste the user supplied is their
+                # own text and wins. The fetched advert is the fallback.
+                text = fetched["description"]
+            if employment_type is None:
+                # Only ever sets "contract" (see employment_type_from_criteria):
+                # LinkedIn's "Full-time" says nothing about permanence, so it is
+                # left alone rather than guessed at.
+                employment_type = linkedin_fetch.employment_type_from_criteria(
+                    fetched.get("criteria", {}))
+
     inferred = {}
     if args.infer and text:
         inferred = parse_paste(text)
@@ -505,8 +593,12 @@ def main():
 
     missing = [name for name, val in (("--company", company), ("--title", title)) if not val]
     if missing:
-        hint = (" Could not infer them from the paste either — add --infer, or pass them."
-                if not args.infer and text else " Pass them explicitly, or use --infer with a paste.")
+        hint = " Pass them explicitly, or paste the posting and add --infer."
+        if want_fetch and not fetched:
+            hint = (" Reading the posting from its URL did not work (see above) — paste "
+                    "it instead (--clipboard or --file) and add --infer, or pass them.")
+        elif want_fetch and fetched:
+            hint = " The LinkedIn page did not carry them — pass them explicitly."
         sys.exit(f"Missing required field(s): {', '.join(missing)}.{hint}")
     if location is None:
         location = ""  # stored as empty; the filters verdict will say so
@@ -518,18 +610,35 @@ def main():
     print(f"  URL          : {canonical_url(args.url)}"
           + (f"\n                 (canonicalised from {args.url})"
              if canonical_url(args.url) != args.url else ""))
-    print(f"  Description  : {len(text)} characters" if text else "  Description  : (none)")
+    from_page = bool(fetched) and text == fetched.get("description")
+    print(f"  Description  : {len(text)} characters"
+          f"{' (read from the LinkedIn page)' if from_page else ''}" if text
+          else "  Description  : (none)")
     for field in ("company", "title", "location", "posted_at"):
         if inferred.get(field) in (company, title, location, posted_at) and inferred.get(f"{field}_from"):
             print(f"  {inferred.get(f'{field}_how', 'inferred'):8} {field:8}: "
                   f"from line {inferred[f'{field}_from']!r}")
+    if fetched:
+        # Say which of the stored values came off the page, so a value that was
+        # NOT used (because you passed --title yourself) is visibly not used.
+        stored = {"company": company, "title": title, "location": location, "posted_at": posted_at}
+        used = [f for f, v in stored.items() if v and fetched.get(f) == v]
+        if used:
+            print(f"  {'fetched':8} {'/'.join(used)}: from the LinkedIn page "
+                  f"(job {fetched['job_id']})")
+        if fetched.get("criteria"):
+            print("  Criteria     : " + "; ".join(f"{k}: {v}"
+                                                 for k, v in fetched["criteria"].items()))
+        if employment_type == "contract" and args.employment_type is None:
+            print("  Employment   : contract — LinkedIn states a contract employment type "
+                  "(override with --permanent)")
     if args.url and not _is_linkedin_job_url(args.url) and "linkedin" in args.url:
         print("  NOTE         : this looks like a LinkedIn search/listing URL, not a job URL "
               "(…/jobs/view/<id>) — the URL is the dedup key, so a search URL may collide "
               "with future postings.")
 
     report_filter_verdict(company, title, location, text)
-    report_contract_terms(args.employment_type, title, location, text)
+    report_contract_terms(employment_type, title, location, text)
 
     if args.dry_run:
         print("  Result       : --dry-run, nothing written.")
@@ -539,7 +648,7 @@ def main():
         inserted, message = add_job(
             conn, url=args.url, company=company, title=title, location=location,
             description=text, posted_at=posted_at, source=args.source, update=args.update,
-            employment_type=args.employment_type,
+            employment_type=employment_type,
         )
     print(f"  Result       : {message}")
     if not inserted:

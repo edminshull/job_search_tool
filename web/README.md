@@ -107,7 +107,9 @@ The detail panel adds a **Screening** block (language tier and the words that ma
 plus the clearance finding and the clause it came from) and a **Contract terms** block
 for contract roles: the IR35 status and the phrase it was read from, the day rate and
 where that figure came from, the equivalent permanent salary, and the floor it was
-judged against.
+judged against. It also carries the **Master CV** row — the **Scan CV** button, which
+checks the one CV you actually send against this posting and reports which real
+experience it is not showing (`README.md` covers what the scan does and does not do).
 
 ### The language filter
 
@@ -124,10 +126,17 @@ evidence of a match, just an absence of evidence.
 
 ### The posting-date window
 
-The board **defaults to postings from the last month**. That is a default, not a limit:
-the toolbar's "Posted within" control opens it to 7 days / 3 months / 6 months / all
-dates, and whenever the window is hiding rows the board says so with a one-click
+The board **defaults to showing every date**, and the recency window is opt-in:
+the toolbar's "Posted within" control narrows it to 7 days / last month / 3 months /
+6 months, and whenever the window is hiding rows the board says so with a one-click
 "Show all dates". Nothing is ever dropped silently.
+
+The default used to be "Last month", and that was actively harmful. Measured on this
+board on 2026-10-01: 127 rows passed the filters, all 127 were already AI-scored, and
+the 30-day window hid 25 of them — including Lendable's *Senior Quality Engineer - AI*
+at score 72, the best-scoring row of the whole run the pipeline had just printed.
+Hiding a scored row behind the employer's own `posted_at` claim is backwards: that is
+the field this repo already documents as unreliable and years-stale.
 
 Two deliberate details:
 

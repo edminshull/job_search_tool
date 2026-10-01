@@ -19,39 +19,44 @@ type JobDetailPanelProps = {
   /** Opens the tailoring overlay. The panel does not own its state: a
    *  tailored CV belongs to the URL, not to this panel, and closing the panel
    *  mid-draft must not discard it. */
-  onTailorCv: () => void;
+  onScanCv: () => void;
+  /** The board row for the advert this one is a re-advert of, when that row is
+   *  on the board. Null when this row is the original, or when the original was
+   *  filtered out and so has no row to open — the notice then shows the url as
+   *  text instead of offering a button that would go nowhere. */
+  duplicateOriginal: DatedJob | null;
+  /** The board row the inherited status was copied from. Not necessarily the
+   *  same row as duplicateOriginal: the decision can sit on any advert of the
+   *  job, and it is the one you judged that matters. */
+  inheritedSource: DatedJob | null;
+  onOpenJob: (job: DatedJob) => void;
 };
 
-/** What the CV button and its chip say for each tailoring state. */
-function cvStateLabel(
-  status: string | null,
+/** What the CV button's chip says for each ATS-scan verdict.
+ *
+ *  "unknown" is deliberately its own tone rather than folded into "warn": the
+ *  scan could not read the posting, which is a fact about the stored advert and
+ *  not a judgement about the CV. Dressing it as a warning beside a real
+ *  borderline would train the reader to ignore both. */
+function atsStateLabel(
   verdict: string | null,
-  filesPresent: boolean,
+  scannedAt: string | null,
 ): { label: string; tone: string } | null {
-  if (!status) return null;
-  if (status === "rendered") {
-    // The database claims a render but the file is not on disk. Say that
-    // plainly rather than offering a link that 404s — the row's own record is
-    // wrong, and re-rendering is the fix.
-    if (!filesPresent) return { label: "CV file missing — re-render", tone: "bad" };
-    return verdict === "accept"
-      ? { label: "CV ready", tone: "ok" }
-      : { label: verdict === "reject" ? "CV ready (claims rejected)" : "CV ready (review notes)", tone: verdict === "reject" ? "bad" : "warn" };
-  }
-  if (status === "draft") return { label: "CV drafted, not rendered", tone: "warn" };
-  if (status === "failed") return { label: "CV tailoring failed", tone: "bad" };
-  return null;
+  if (!scannedAt) return null;
+  if (verdict === "pass") return { label: "CV would pass", tone: "ok" };
+  if (verdict === "borderline") return { label: "CV borderline", tone: "warn" };
+  if (verdict === "fail") return { label: "CV would be filtered", tone: "bad" };
+  return { label: "CV scan inconclusive", tone: "unev" };
 }
 
 export default function JobDetailPanel({
   job, draftStatus, onDraftStatusChange, draftNotes, onDraftNotesChange, saveState, onSave,
-  onClose, onTailorCv,
+  onClose, onScanCv, duplicateOriginal, inheritedSource, onOpenJob,
 }: JobDetailPanelProps) {
   const isContract = job.employment_type === "contract";
   const hasRate = job.day_rate_max != null || job.day_rate_min != null;
-  const cv = cvStateLabel(job.cv_status, job.cv_verify_verdict, job.cv_files_present);
+  const ats = atsStateLabel(job.cv_ats_verdict, job.cv_ats_updated_at);
   // Only offer the file links when the files are actually there.
-  const cvDownloadable = job.cv_status === "rendered" && job.cv_files_present;
   const rateText = hasRate
     ? job.day_rate_min != null && job.day_rate_min !== job.day_rate_max
       ? `${formatGBP(job.day_rate_min)} – ${formatGBP(job.day_rate_max)} per day`
@@ -73,6 +78,26 @@ export default function JobDetailPanel({
             Posted {job.age.label}
             {job.age.date && ` — ${job.age.exact}`}
           </div>
+          {/* Saying this in the panel is the point of the whole feature: the way
+              you found out before was to open the advert on LinkedIn and read
+              "Applied". */}
+          {job.duplicate_of && (
+            <div className="panel-meta dup-note" style={{marginTop: 6}}>
+              <span className="chip dup-chip">re-advert</span>{" "}
+              the same job is already stored under another advert
+              {duplicateOriginal ? (
+                <>
+                  {" — "}
+                  <button className="linklike" onClick={() => onOpenJob(duplicateOriginal)}>
+                    {duplicateOriginal.company}
+                    {duplicateOriginal.age.label ? ` · ${duplicateOriginal.age.label}` : ""}
+                  </button>
+                </>
+              ) : (
+                <span className="contract-evidence"> ({job.duplicate_of})</span>
+              )}
+            </div>
+          )}
         </div>
         <div id="panel-body">
           {(job.language_tier || job.clearance_status) && (
@@ -165,6 +190,25 @@ export default function JobDetailPanel({
               ))}
             </select>
           </div>
+          {/* A status the tool copied across from another advert of this job is
+              NOT the same claim as one you set, and presenting it as yours would
+              be the kind of quiet half-truth this system exists to avoid. Saving
+              any status here clears the inherited marker — after that it IS your
+              decision. See app/duplicates.py. */}
+          {job.status_inherited_from && (
+            <div className="inherit-note">
+              <strong>{MY_STATUS_LABEL[job.my_status ?? ""] ?? job.my_status}</strong> was
+              inherited from another advert of this same job, not set here.{" "}
+              {inheritedSource ? (
+                <button className="linklike" onClick={() => onOpenJob(inheritedSource)}>
+                  Open that advert
+                </button>
+              ) : (
+                <span className="contract-evidence">{job.status_inherited_from}</span>
+              )}
+              {" "}Saving a status below makes it yours.
+            </div>
+          )}
 
           <h3>Notes</h3>
           <textarea
@@ -183,40 +227,53 @@ export default function JobDetailPanel({
             </a>
           </div>
 
-          <h3>Tailored CV</h3>
+          <h3>Master CV</h3>
           <div className="cv-row">
-            <button className="btn" onClick={onTailorCv}>
-              {job.cv_status ? "Open tailored CV" : "Tailor CV for this job"}
+            <button className="btn" onClick={onScanCv}>
+              {job.cv_ats_updated_at ? "Open CV scan" : "Scan CV for this job"}
             </button>
-            {cv && <span className={`chip cv-${cv.tone}`}>{cv.label}</span>}
+            {ats && <span className={`chip cv-${ats.tone}`}>{ats.label}</span>}
           </div>
-          {cv ? (
+          {ats ? (
             <p className="tailor-note">
-              {job.cv_coverage_master != null && job.cv_coverage_tailored != null && (
-                <>Requirement coverage {job.cv_coverage_master}% (master) →{" "}
-                  <strong>{job.cv_coverage_tailored}%</strong> (this CV). </>
+              {job.cv_ats_coverage != null && (
+                <>Priority-term coverage <strong>{job.cv_ats_coverage}%</strong>. </>
               )}
-              {job.cv_status === "draft" && "Drafted but not rendered — approve it to produce the PDF. "}
-              {job.cv_status === "rendered" && !job.cv_files_present && (
-                <>The record says this was rendered, but the file is no longer in{" "}
-                  <code>cv_output/</code>. Open the CV and re-render — the draft is stored, so this
-                  takes seconds and does not need another model call. </>
-              )}
-              {cvDownloadable && job.cv_pdf_path && (
-                <>
-                  <a className="link-btn" href={`/api/file?path=${encodeURIComponent(job.cv_pdf_path)}`}
-                     target="_blank" rel="noopener noreferrer">Open PDF ↗</a>
-                  {job.cv_docx_path && (
-                    <a className="link-btn" href={`/api/file?path=${encodeURIComponent(job.cv_docx_path)}`}
-                       target="_blank" rel="noopener noreferrer">DOCX ↗</a>
-                  )}
-                </>
+              {job.cv_ats_hard_gaps ? (
+                <>{job.cv_ats_hard_gaps} requirement-level hard skill
+                  {job.cv_ats_hard_gaps === 1 ? "" : "s"} the CV does not mention. </>
+              ) : null}
+              {job.cv_ats_suggestions ? (
+                <>{job.cv_ats_suggestions} piece{job.cv_ats_suggestions === 1 ? "" : "s"} of master
+                  experience worth adding. </>
+              ) : null}
+              {job.cv_ats_projected != null && job.cv_ats_projected !== job.cv_ats_coverage && (
+                <>Adding all of them would take it to {job.cv_ats_projected}%. </>
               )}
             </p>
           ) : (
             <p className="tailor-note">
-              Selects from <code>cv/master.yaml</code> and rewords into this posting&rsquo;s
-              vocabulary, then re-checks every claim against the master before you approve it.
+              Scans the master CV against this posting with no model call: whether a keyword screen
+              would find what the advert asks for, and which real experience the CV is not showing.
+            </p>
+          )}
+
+          {/* Older per-posting tailored CVs, kept reachable.
+              Per-posting tailoring was retired (2026-10-01) because the CV that
+              gets sent is now the single master document. The renders it
+              produced are still on disk and still in the database, though, and
+              silently dropping the link to a CV you may have already sent would
+              lose work rather than remove a feature. So it is shown when — and
+              only when — one really exists. */}
+          {job.cv_status === "rendered" && job.cv_files_present && job.cv_pdf_path && (
+            <p className="tailor-note">
+              A tailored CV was rendered for this job before tailoring was retired.{" "}
+              <a className="link-btn" href={`/api/file?path=${encodeURIComponent(job.cv_pdf_path)}`}
+                 target="_blank" rel="noopener noreferrer">Open PDF ↗</a>
+              {job.cv_docx_path && (
+                <a className="link-btn" href={`/api/file?path=${encodeURIComponent(job.cv_docx_path)}`}
+                   target="_blank" rel="noopener noreferrer">DOCX ↗</a>
+              )}
             </p>
           )}
 
