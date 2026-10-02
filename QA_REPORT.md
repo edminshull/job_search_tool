@@ -734,8 +734,13 @@ of GitHub's own machinery backs it up — see findings 1 and 2 above:
 cd job_search_tool
 python3 scripts/dependabot_merge.py                     # dry run — changes nothing
 python3 scripts/dependabot_merge.py --apply --auto      # the routine case
-gh workflow run dependabot-merge --repo edminshull/job_search_tool   # the workflow, dry
+gh workflow run dependabot-merge.yml --repo edminshull/job_search_tool   # the workflow, dry
 ```
+
+`dependabot-merge.yml` is the file name — the display name is "Dependabot merge",
+and a bare `dependabot-merge` matches neither, failing with *"could not find any
+workflows named"*. A hand-triggered dispatch is a **dry run** unless `-f
+apply=true` is passed, so it is always safe to try.
 
 The dry run is the default and its stdout *is* the report — the same markdown the
 workflow appends to `$GITHUB_STEP_SUMMARY`. Nothing is mutated without `--apply`,
