@@ -97,6 +97,18 @@ LABEL_DESCRIPTION = "Dependabot bump whose checks did not pass; needs a person"
 # Dependabot's author login is the app, not a bot account.
 DEPENDABOT_LOGINS = frozenset({"app/dependabot", "dependabot[bot]"})
 
+# Dependabot signs its own replies as "dependabot" in issue comments.
+DEPENDABOT_REPLY_LOGINS = frozenset({"dependabot", "app/dependabot", "dependabot[bot]"})
+
+# Dependabot's refusal to manage a branch a person has edited. Matched on text,
+# because it is its own wording and it is the only signal that the rebase request
+# will never be honoured.
+REFUSAL_MARKERS = (
+    "edited by someone other than dependabot",
+    "can't rebase",
+    "cannot rebase",
+)
+
 # Dependencies that CI CANNOT actually verify, and why this list is load-bearing.
 #
 # app/tests/test_cv_tailor.py deliberately tests the real cv/master.yaml — "a
@@ -399,24 +411,130 @@ def already_asked_to_update(repo: str, number: int, sha: str) -> bool:
     Otherwise every run would re-comment `@dependabot rebase` while the rebase is
     still queued, and the pull request would fill with noise.
     """
-    asked_at = [
-        _parse_ts(comment.get("createdAt", ""))
-        for comment in comments_for(repo, number)
-        if "@dependabot rebase" in (comment.get("body") or "")
-        or "@dependabot recreate" in (comment.get("body") or "")
-    ]
-    asked_at = [stamp for stamp in asked_at if stamp is not None]
-    if not asked_at:
+    asked = _asked_at(repo, number, ("@dependabot rebase", "@dependabot recreate"))
+    if not asked:
         return False
     head = _parse_ts(commit_date(repo, sha))
     if head is None:
         return True  # cannot prove it is stale -> do not re-ask
-    return max(asked_at) > head
+    return max(asked) > head
+
+
+def _asked_at(repo: str, number: int, commands: tuple[str, ...]) -> list[datetime]:
+    stamps = [
+        _parse_ts(comment.get("createdAt", ""))
+        for comment in comments_for(repo, number)
+        if any(command in (comment.get("body") or "") for command in commands)
+    ]
+    return [stamp for stamp in stamps if stamp is not None]
+
+
+def newest_refusal(repo: str, number: int, sha: str) -> tuple[datetime | None, str]:
+    """The last time Dependabot said it will not touch this branch.
+
+    This matters more than it looks. `@dependabot rebase` is REFUSED outright on
+    a branch a person has edited — Dependabot replies "Looks like this PR has
+    been edited by someone other than Dependabot. That means Dependabot can't
+    rebase it - sorry!" and then does nothing, forever. Clicking "Update branch"
+    in the GitHub UI is enough to cause it, because that leaves a merge commit
+    authored by a human on the branch.
+
+    Without this check the tool would ask, be refused, and report "waiting" on
+    every subsequent run while the pull request stayed permanently unmergeable
+    under strict branch protection — a silent stall, which is the one outcome
+    this whole script exists to prevent.
+
+    A refusal is only counted while it is NEWER than the head commit. Once the
+    branch has been rebuilt — which is exactly what `@dependabot recreate` does —
+    the refusal was about a branch state that no longer exists, and holding it
+    against the new branch would strand a pull request that is now perfectly
+    rebasable.
+    """
+    head = _parse_ts(commit_date(repo, sha))
+    latest: tuple[datetime | None, str] = (None, "")
+    for comment in comments_for(repo, number):
+        login = (comment.get("author") or {}).get("login", "")
+        body = comment.get("body") or ""
+        if login not in DEPENDABOT_REPLY_LOGINS:
+            continue
+        if not any(marker in body.lower() for marker in REFUSAL_MARKERS):
+            continue
+        stamp = _parse_ts(comment.get("createdAt", ""))
+        if stamp is None:
+            continue
+        if head is not None and stamp <= head:
+            continue  # the branch has been rebuilt since; this no longer applies
+        if latest[0] is None or stamp > latest[0]:
+            latest = (stamp, body)
+    return latest
+
+
+def content_bearing_human_commits(repo: str, number: int) -> list[str]:
+    """Human commits on a Dependabot branch that carry content of their own.
+
+    The distinction decides whether recreating the branch is safe. A commit whose
+    headline starts with "Merge " is what the "Update branch" button leaves
+    behind: it holds no content, so `@dependabot recreate` — which discards the
+    branch and rebuilds it from main plus the bump — loses nothing. Any other
+    human commit is real work, and recreating would destroy it, so that case
+    needs a person instead.
+    """
+    raw = gh_pr(repo, "view", str(number), "--json", "commits", check=False)
+    data = gh_json(raw) if raw.strip() else None
+    blockers: list[str] = []
+    for commit in (data or {}).get("commits") or []:
+        authors = commit.get("authors") or []
+        names = " ".join(
+            str(author.get("name", "")) + str(author.get("login", ""))
+            for author in authors if isinstance(author, dict)
+        ).lower()
+        if "dependabot" in names:
+            continue
+        headline = commit.get("messageHeadline", "") or ""
+        if not headline.lower().startswith("merge "):
+            blockers.append(f"{commit.get('oid', '')[:8]} {headline}".strip())
+    return blockers
 
 
 def already_reported_failure(repo: str, number: int, sha: str) -> bool:
     marker = f"<!-- dependabot-merge-tool:failed:{sha} -->"
     return any(marker in (comment.get("body") or "") for comment in comments_for(repo, number))
+
+
+def update_decision(repo: str, number: int, base: dict, sha: str, reason: str) -> Decision:
+    """Behind or conflicting: ask Dependabot to fix its own branch — unless it won't.
+
+    The refusal path is the interesting one. `@dependabot rebase` is answered with
+    "can't rebase it - sorry!" for any branch a person has edited (an "Update
+    branch" click is enough), and no amount of asking changes that. So the tool
+    escalates once to `@dependabot recreate` — but ONLY when the branch holds no
+    human content beyond a merge of main, because recreate discards the branch.
+    Anything else is a person's problem, reported rather than guessed at.
+    """
+    refusal_at, refusal_body = newest_refusal(repo, number, sha)
+    if refusal_at is not None:
+        if any(stamp > refusal_at for stamp in _asked_at(repo, number, ("@dependabot recreate",))):
+            return Decision(**base, reason="Dependabot refused to rebase and has already been "
+                                           "asked to recreate", action="NEEDS_HUMAN",
+                            note="look at the branch by hand")
+        blockers = content_bearing_human_commits(repo, number)
+        if blockers:
+            return Decision(
+                **base,
+                reason="Dependabot will not rebase a branch a person has edited, and it carries "
+                       f"human work: {'; '.join(blockers)}",
+                action="NEEDS_HUMAN",
+                note="recreating would discard that commit; update the branch by hand, or close "
+                     "the pull request and let Dependabot raise a fresh one",
+            )
+        return Decision(**base,
+                        reason=f"{reason}, and Dependabot will not rebase it because a person "
+                               "has edited the branch",
+                        action="UPDATE", note="recreate")
+
+    # No refusal on record: the ordinary path. Conflicts need a rebuild anyway.
+    note = "recreate" if reason.startswith("conflicts") else "rebase"
+    return Decision(**base, reason=reason, action="UPDATE", note=note)
 
 
 def evaluate(repo: str, pr: dict, *, auto: bool, include_majors: bool, ci_blind: str) -> Decision:
@@ -463,9 +581,9 @@ def evaluate(repo: str, pr: dict, *, auto: bool, include_majors: bool, ci_blind:
         return Decision(**base, reason=f"cannot classify the bump - {why}", action="NEEDS_HUMAN")
 
     if mergeable == "CONFLICTING" or merge_state == "DIRTY":
-        return Decision(**base, reason="conflicts with main", action="UPDATE", note="recreate")
+        return update_decision(repo, number, base, sha, "conflicts with main")
     if merge_state == "BEHIND":
-        return Decision(**base, reason="behind main", action="UPDATE", note="rebase")
+        return update_decision(repo, number, base, sha, "behind main")
     if merge_state == "UNSTABLE":
         return Decision(**base, reason="GitHub reports UNSTABLE despite green required checks",
                         action="DEFER", note="look again rather than force it")
@@ -539,8 +657,21 @@ def enable_auto_merge(repo: str, decision: Decision, apply: bool) -> str:
 
 def request_update(repo: str, decision: Decision, apply: bool) -> str:
     command = "@dependabot recreate" if decision.note == "recreate" else "@dependabot rebase"
-    if already_asked_to_update(repo, decision.number, decision.sha):
+
+    # The anti-spam guard has to be command-aware. A REFUSED `@dependabot rebase`
+    # is newer than the head commit, so the ordinary check would see "already
+    # asked" and never post the escalation — the exact stalemate this path exists
+    # to break. Once Dependabot has refused, only a recreate asked AFTER that
+    # refusal counts as already-asked.
+    refusal_at, _ = newest_refusal(repo, decision.number, decision.sha)
+    if refusal_at is not None and command == "@dependabot recreate":
+        asked_since = [s for s in _asked_at(repo, decision.number, ("@dependabot recreate",))
+                       if s > refusal_at]
+        if asked_since:
+            return "already asked Dependabot to recreate since it refused; waiting"
+    elif already_asked_to_update(repo, decision.number, decision.sha):
         return f"already asked for {command} on {decision.sha[:8]}; waiting"
+
     if not apply:
         return f"would comment: {command}"
     gh_pr(repo, "comment", str(decision.number), "--body", command)
@@ -752,6 +883,12 @@ def main(argv: list[str] | None = None) -> int:
             elif decision.action == "AUTO":
                 if merges_done < args.max_merges:
                     decision.note = enable_auto_merge(args.repo, decision, args.apply)
+                    # A queued auto-merge counts against the cap. Several queued
+                    # at once would each be validated against the current main and
+                    # then land in sequence, and these bumps all touch the same
+                    # requirements.txt — so only one may be in flight per run.
+                    if args.apply:
+                        merges_done += 1
                 else:
                     decision.action = "DEFER"
                     decision.note = f"hit --max-merges {args.max_merges}; next run"
