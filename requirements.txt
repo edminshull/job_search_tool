@@ -17,7 +17,7 @@ pytest>=9.1.1
 # interpreter — see app/cv_tailor._run_script for why.
 python-docx>=1.2.0
 fpdf2>=2.8.9
-pypdf>=5.0
+pypdf>=6.19.0
 
 # --- Master CV in Google Docs (app/gdoc.py) ---------------------------------
 # OPTIONAL, and only for the recommended setup: reading a PRIVATE Doc through a
