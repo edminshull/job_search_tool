@@ -1,5 +1,5 @@
 httpx>=0.27
-pyyaml>=6.0
+pyyaml>=6.0.3
 # Optional: only needed for the Anthropic/Claude provider. DeepSeek is the
 # default provider and needs nothing beyond httpx (already listed above).
 # anthropic>=0.40
