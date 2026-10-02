@@ -692,6 +692,55 @@ diff when the title is a group title (`Bump the python-minor-patch group with 4
 updates`), because with the grouping in `.github/dependabot.yml` a grouped pip PR
 will regularly contain one of the three.
 
+## The split that governs everything: patch/minor is hands-off, majors are not
+
+`classify()` reads the semver level out of the title — including for grouped
+updates, where the group name carries it, and treating a `0.x` minor as a major
+because semver promises nothing below 1.0. That single value decides the whole
+route:
+
+| | patch / minor | major |
+|---|---|---|
+| Merged by the schedule | yes, on green CI | never |
+| Kept rebased | yes | yes |
+| What the user must do | nothing | run the checks, look at a board, say yes |
+
+A major is green in CI and that is not the point, so a major goes through a gate
+instead: read the changelog and name the risk, check the branch out as a worktree,
+run the suite, run the two checks **CI never runs** (`make cv-selftest` when the
+diff can reach it, and `npm run build` always), start the board for the user to
+click through, and then stop and wait for an explicit instruction before merging
+with `--include-majors`. The full procedure lives in the `dsh-dependabot-merge`
+skill; the reason it exists is that the first three majors processed this way
+(#6 pytest, #4 pypdf, #3 `@types/node`) were all green, and only the gate turned
+up anything — the untouched `PdfReader` path, and the home-page hang caused by a
+`127.0.0.1` URL on a `next dev` server that had announced itself as `localhost`.
+
+## Keeping a branch current: `rebase` → `recreate` → `update-branch`
+
+`@dependabot rebase` is refused outright on any branch a person has edited —
+clicking **Update branch** is enough, because it leaves a merge commit authored by
+a human. Dependabot answers *"Looks like this PR has been edited by someone other
+than Dependabot. That means Dependabot can't rebase it - sorry!"* and then does
+nothing, forever. Under `strict` branch protection such a pull request can never
+become mergeable, so the tool picks a remedy by what is actually on the branch:
+
+| On the branch | Remedy | Why |
+|---|---|---|
+| Only Dependabot's commit | `@dependabot rebase` | stays clean; Dependabot keeps managing it |
+| A person's commits, all merges of main | `@dependabot recreate` | rebuilds; a merge of main carries no content, so nothing is lost |
+| A person's commits with content | `gh pr update-branch` | merges main *in*, so their work survives |
+
+The third rung is the interesting one and it is not free: `gh pr update-branch`
+authors a merge commit as a person, which is exactly what makes Dependabot stop
+managing the pull request. It is sustainable — the command keeps working — but it
+should be the fallback, not the default, which is why the rebase request comes
+first. It is also refused on a genuinely conflicting branch, and the tool reports
+that rather than forcing anything.
+
+A refusal stops counting once the head commit is newer than it, so a recreated
+branch is not held to a verdict about a branch state that no longer exists.
+
 ## Why the workflow is triggered by `schedule`, not by `pull_request`
 
 This is the single most counter-intuitive thing in the design, and it is why the

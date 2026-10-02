@@ -506,33 +506,55 @@ def update_decision(repo: str, number: int, base: dict, sha: str, reason: str) -
 
     The refusal path is the interesting one. `@dependabot rebase` is answered with
     "can't rebase it - sorry!" for any branch a person has edited (an "Update
-    branch" click is enough), and no amount of asking changes that. So the tool
-    escalates once to `@dependabot recreate` — but ONLY when the branch holds no
-    human content beyond a merge of main, because recreate discards the branch.
-    Anything else is a person's problem, reported rather than guessed at.
+    branch" click is enough), and no amount of asking changes that.
+
+    So there is a ladder, and which rung applies is decided by what is actually on
+    the branch:
+
+      nothing but Dependabot's own commit  -> `@dependabot rebase` (stays clean,
+                                              Dependabot stays in charge)
+      a person's commits, all merges of main -> `@dependabot recreate` (rebuilds
+                                              the branch; nothing is lost, because
+                                              a merge of main carries no content)
+      a person's commits with content of their own -> `gh pr update-branch`
+                                              (merges main IN, so their work
+                                              survives — the one remedy that both
+                                              brings the branch current and
+                                              destroys nothing)
+
+    The middle rung exists because recreate discards the branch, and the last one
+    because stalling on a pull request that update-branch can fix is not a
+    decision, it is an omission: that was the gap the first live run exposed.
     """
     refusal_at, refusal_body = newest_refusal(repo, number, sha)
+    blockers = content_bearing_human_commits(repo, number)
+
     if refusal_at is not None:
+        if blockers:
+            return Decision(
+                **base,
+                reason=f"{reason}, and Dependabot will not rebase a branch a person has edited "
+                       f"({'; '.join(blockers)})",
+                action="UPDATE", note="update-branch",
+            )
         if any(stamp > refusal_at for stamp in _asked_at(repo, number, ("@dependabot recreate",))):
             return Decision(**base, reason="Dependabot refused to rebase and has already been "
                                            "asked to recreate", action="NEEDS_HUMAN",
                             note="look at the branch by hand")
-        blockers = content_bearing_human_commits(repo, number)
-        if blockers:
-            return Decision(
-                **base,
-                reason="Dependabot will not rebase a branch a person has edited, and it carries "
-                       f"human work: {'; '.join(blockers)}",
-                action="NEEDS_HUMAN",
-                note="recreating would discard that commit; update the branch by hand, or close "
-                     "the pull request and let Dependabot raise a fresh one",
-            )
         return Decision(**base,
                         reason=f"{reason}, and Dependabot will not rebase it because a person "
                                "has edited the branch",
                         action="UPDATE", note="recreate")
 
-    # No refusal on record: the ordinary path. Conflicts need a rebuild anyway.
+    # No refusal on record. A branch carrying a person's own commits will earn a
+    # refusal if we ask, so do not spend the round trip: update the branch, which
+    # preserves their work. Conflicts need a rebuild either way.
+    if blockers:
+        return Decision(
+            **base,
+            reason=f"{reason}, and the branch carries a person's work ({'; '.join(blockers)})",
+            action="UPDATE", note="update-branch",
+        )
     note = "recreate" if reason.startswith("conflicts") else "rebase"
     return Decision(**base, reason=reason, action="UPDATE", note=note)
 
@@ -573,13 +595,15 @@ def evaluate(repo: str, pr: dict, *, auto: bool, include_majors: bool, ci_blind:
         return Decision(**base, reason=f"checks still running: {', '.join(sorted(checks.pending))}",
                         action="DEFER", note="run again later")
 
-    # Checks are green on this exact commit. Now: is it safe to change the tree?
-    if level == "major" and not include_majors:
-        return Decision(**base, reason=f"major bump - {why}", action="NEEDS_HUMAN",
-                        note="run with --include-majors to override")
-    if level == "unknown":
-        return Decision(**base, reason=f"cannot classify the bump - {why}", action="NEEDS_HUMAN")
-
+    # Checks are green on this exact commit. Bring the branch current FIRST,
+    # before asking whether it is the kind of bump this tool may merge.
+    #
+    # The order matters and was wrong at first: a major was reported and left
+    # BEHIND, so it drifted further out of date every time something else merged
+    # and had to be rebased by hand before a human could even decide on it. A
+    # rebase is harmless for a bump that will never be auto-merged, so keeping it
+    # current is strictly better — and this is the "update the remaining pull
+    # requests" half of the job, which should not skip the ones that need a human.
     if mergeable == "CONFLICTING" or merge_state == "DIRTY":
         return update_decision(repo, number, base, sha, "conflicts with main")
     if merge_state == "BEHIND":
@@ -593,6 +617,13 @@ def evaluate(repo: str, pr: dict, *, auto: bool, include_majors: bool, ci_blind:
     if merge_state not in ("CLEAN", "HAS_HOOKS"):
         return Decision(**base, reason=f"merge state {merge_state}", action="DEFER",
                         note="GitHub has not finished computing mergeability")
+
+    # Up to date. Now the questions that decide whether it may be MERGED.
+    if level == "major" and not include_majors:
+        return Decision(**base, reason=f"major bump - {why}", action="NEEDS_HUMAN",
+                        note="run with --include-majors to override")
+    if level == "unknown":
+        return Decision(**base, reason=f"cannot classify the bump - {why}", action="NEEDS_HUMAN")
 
     # Everything the tool can check is green. Last question: is this a dependency
     # that green CI actually says anything about?
@@ -656,6 +687,9 @@ def enable_auto_merge(repo: str, decision: Decision, apply: bool) -> str:
 
 
 def request_update(repo: str, decision: Decision, apply: bool) -> str:
+    if decision.note == "update-branch":
+        return update_branch(repo, decision, apply)
+
     command = "@dependabot recreate" if decision.note == "recreate" else "@dependabot rebase"
 
     # The anti-spam guard has to be command-aware. A REFUSED `@dependabot rebase`
@@ -676,6 +710,27 @@ def request_update(repo: str, decision: Decision, apply: bool) -> str:
         return f"would comment: {command}"
     gh_pr(repo, "comment", str(decision.number), "--body", command)
     return f"asked Dependabot to {command.split()[-1]}"
+
+
+def update_branch(repo: str, decision: Decision, apply: bool) -> str:
+    """Merge main INTO the branch, keeping every commit that is already on it.
+
+    The right remedy when the branch carries a person's own work and Dependabot
+    will not rebase it. `@dependabot recreate` would rebuild the branch and throw
+    that work away; this does not touch it.
+
+    The cost, which is worth knowing before reaching for it: `gh pr update-branch`
+    authors a merge commit as a person, so Dependabot treats the branch as edited
+    and stops managing it. That is acceptable here precisely because it is the
+    case where Dependabot had already stopped.
+    """
+    if not apply:
+        return "would run: gh pr update-branch"
+    proc = _run(["gh", "pr", "update-branch", str(decision.number), "--repo", repo], check=False)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip().splitlines()
+        return f"update-branch refused, left alone ({detail[0][:140] if detail else 'no output'})"
+    return "merged main into the branch, keeping the human commits"
 
 
 def ensure_label(repo: str, apply: bool) -> None:
