@@ -1,0 +1,160 @@
+# Merge the Dependabot pull requests that have passed CI.
+#
+# WHY `schedule` AND NOT `pull_request`
+# ------------------------------------
+# This is the one thing that must not be changed, so it is first.
+#
+# A workflow triggered by Dependabot's own pull_request events gets a READ-ONLY
+# GITHUB_TOKEN, and a workflow that tries to merge then fails — or worse, looks
+# like it worked. GitHub's "Dependabot on GitHub Actions" reference is explicit:
+# for runs where github.actor == 'dependabot[bot]' on pull_request, push, create
+# and similar events, "GITHUB_TOKEN has read-only permissions by default" and
+# "Secrets are populated from Dependabot secrets. GitHub Actions secrets are not
+# available". It also says pull_request_target does NOT help: when the base ref
+# was created by Dependabot the token is read-only there too, "even if the
+# workflow is re-run by a different actor".
+#
+# A scheduled run is not initiated by Dependabot, so it gets the token the
+# permissions block below asks for, and can merge. So the popular
+# "auto-merge on the PR event" pattern cannot work in this repository, and this
+# file is shaped around that fact rather than around the pattern.
+#
+# TWO SETTINGS THIS DEPENDS ON
+# ----------------------------
+# 1. THIS REPOSITORY IS A PUBLIC FORK, AND SCHEDULED WORKFLOWS ARE DISABLED BY
+#    DEFAULT IN FORKS. GitHub's workflow documentation: "When a public
+#    repository is forked, scheduled workflows are disabled by default." Until it
+#    is enabled in the Actions tab this file does nothing at all, silently — no
+#    error, no run, no notification. Check `gh workflow list --all` shows it as
+#    active, or trigger it by hand once with `gh workflow run dependabot-merge`.
+#
+# 2. Scheduled workflows in a public repository are automatically disabled after
+#    60 days of repository inactivity. A quiet repo is exactly when this stops
+#    mattering, so nothing needs fixing — but a run that stops appearing is the
+#    symptom, not a bug in the script.
+#
+# THE REAL GATE IS NOT THIS FILE
+# ------------------------------
+# scripts/dependabot_merge.py decides everything, and it fails closed: all three
+# checks must be present and successful on the exact head commit, `pending` is
+# never a pass, a missing check is treated as a failure, and majors are reported
+# rather than merged. This workflow only decides WHEN that runs.
+#
+# It is also worth enabling branch protection with Python tests / Web tests /
+# UI tests as required checks. That is the only control that holds when a script
+# is wrong or bypassed.
+#
+# WHAT IT WILL NOT MERGE
+# ----------------------
+# Dependencies CI is blind to: fpdf2, python-docx and pypdf. The suite that
+# exercises them (app/tests/test_cv_tailor.py) deliberately tests the real
+# cv/master.yaml, which is gitignored, so it skips in CI — 137 tests of it. The
+# ci.yml header says those bumps need a local run, so this workflow reports them
+# and leaves them: run the `dsh-dependabot-merge` skill locally for those.
+#
+# To accept CI-only evidence and let the runner merge them anyway, set the
+# repository variable DEPENDABOT_CI_BLIND to `allow`:
+#
+#   gh variable set DEPENDABOT_CI_BLIND --repo edminshull/job_search_tool --body allow
+#
+# That is an explicit trade, not a default: it means merging a dependency whose
+# only test coverage is skipped.
+
+name: Dependabot merge
+
+on:
+  schedule:
+    # Three sweeps rather than one. Dependabot is due at 07:00 Europe/London, and
+    # every rebase it is asked for lands asynchronously — a single run would
+    # leave the rebased pull requests waiting a whole day for their verdict.
+    #
+    # The times are UTC and GitHub's cron has no timezone, so 07:30 UTC is 08:30
+    # London in summer and 07:30 London in winter. Both are comfortably after
+    # Dependabot's 07:00.
+    - cron: "30 7 * * *"
+    - cron: "0 11 * * *"
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually merge. Off = dry run, which changes nothing."
+        type: boolean
+        default: false
+      include_majors:
+        description: "Also merge major bumps (normally reported for a human)."
+        type: boolean
+        default: false
+      max_merges:
+        description: "How many pull requests to merge in this run."
+        type: number
+        default: 1
+
+# Read-only would make every merge fail. `checks: read` is implicit in the
+# default token but stated here so the requirement is visible rather than
+# folklore.
+permissions:
+  contents: write # merge, and delete the merged branch
+  pull-requests: write # comment, label, auto-merge
+  checks: read # read the check runs the gate is built on
+
+# A second run must never start while one is merging, because each merge moves
+# main underneath the next decision. Queued rather than cancelled: cancelling
+# mid-run would abandon a half-decided queue.
+concurrency:
+  group: dependabot-merge
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    name: Merge green Dependabot PRs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # The script itself comes from the default branch. On a scheduled run the
+      # workflow definition is taken from the default branch anyway, so checking
+      # out anything else would run a script nobody reviewed.
+      - uses: actions/checkout@v7
+
+      # No setup-python step on purpose: the script is stdlib-only and the runner
+      # image already has python3, so there is nothing to install and nothing to
+      # pin. If that ever stops being true, add setup-python here.
+      - name: Merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Repository variable, defaulting to the safe value.
+          CI_BLIND: ${{ vars.DEPENDABOT_CI_BLIND || 'block' }}
+        run: |
+          set -o pipefail
+
+          # A scheduled run IS the unattended merge, so it always applies. A
+          # hand-triggered run defaults to a dry run instead, so that "let me see
+          # what it would do" is the safe thing to reach for and applying is the
+          # deliberate act.
+          MODE="--apply"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.apply }}" != "true" ]; then
+            MODE=""
+            echo "Dispatch without apply: DRY RUN." >&2
+          fi
+
+          python3 scripts/dependabot_merge.py \
+            $MODE \
+            --auto \
+            --max-merges "${{ inputs.max_merges || 1 }}" \
+            --ci-blind "$CI_BLIND" \
+            ${{ inputs.include_majors && '--include-majors' || '' }} \
+            --verbose | tee run.md
+
+      # The script's stdout IS the report, so the run summary and the log are the
+      # same document. That matters for a job nobody watches: this is the only
+      # place that says why a pull request was left alone.
+      - name: Summarise
+        if: always()
+        run: |
+          # run.md is absent if the previous step died before producing output;
+          # `cat` failing there would replace the real error with a confusing one.
+          if [ -f run.md ]; then
+            cat run.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No report was produced — see the Merge step above." >> "$GITHUB_STEP_SUMMARY"
+          fi
