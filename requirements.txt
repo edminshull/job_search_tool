@@ -4,7 +4,7 @@ pyyaml>=6.0.3
 # default provider and needs nothing beyond httpx (already listed above).
 # anthropic>=0.40
 python-dotenv>=1.0
-pytest>=8.0
+pytest>=9.1.1
 
 # --- CV tailoring (app/cv_tailor.py + the vendored scripts/) ----------------
 # The vendored engine's own dependencies, unchanged from the repo it came from.
