@@ -15,7 +15,7 @@ pytest>=8.0
 # Note these must be installed into the repo's OWN venv (./.venv/bin/python),
 # because the tailoring pipeline is invoked as a subprocess with that
 # interpreter — see app/cv_tailor._run_script for why.
-python-docx>=1.1
+python-docx>=1.2.0
 fpdf2>=2.7
 pypdf>=5.0
 
