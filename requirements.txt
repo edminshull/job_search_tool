@@ -3,7 +3,7 @@ pyyaml>=6.0.3
 # Optional: only needed for the Anthropic/Claude provider. DeepSeek is the
 # default provider and needs nothing beyond httpx (already listed above).
 # anthropic>=0.40
-python-dotenv>=1.0
+python-dotenv>=1.2.4
 pytest>=9.1.1
 
 # --- CV tailoring (app/cv_tailor.py + the vendored scripts/) ----------------
