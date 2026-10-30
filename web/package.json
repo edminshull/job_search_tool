@@ -18,15 +18,15 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
-    "dompurify": "^3.4.16",
-    "next": "^16.3.5",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "dompurify": "^3.4.17",
+    "next": "^16.4.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.1",
     "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^26.6.3",
+    "@types/node": "^26.6.5",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "typescript": "^7.0.2"
