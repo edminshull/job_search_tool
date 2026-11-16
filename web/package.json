@@ -17,7 +17,7 @@
     "fixture": "node e2e/scripts/make-fixture-db.mjs"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "^13.1.1",
     "dompurify": "^3.4.17",
     "next": "^16.4.6",
     "react": "^19.3.1",
